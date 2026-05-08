@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PLF Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: #0d1117; color: #c9d1d9; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+header { background: #161b22; border-bottom: 1px solid #30363d; padding: 6px 16px; display: flex; align-items: center; gap: 12px; min-height: 44px; }
+header h1 { font-size: 14px; font-weight: 600; color: #58a6ff; }
+header .stats { font-size: 12px; color: #8b949e; margin-left: auto; }
+.toolbar { display: flex; gap: 8px; align-items: center; }
+.toolbar button, .toolbar label { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; }
+.toolbar button:hover { background: #30363d; }
+.toolbar input[type=file] { display: none; }
+.toolbar input[type=range] { width: 80px; accent-color: #58a6ff; }
+.main { display: flex; flex: 1; overflow: hidden; }
+.timeline-panel { flex: 1; overflow-y: auto; overflow-x: auto; position: relative; }
+.inspector-panel { width: 360px; background: #161b22; border-left: 1px solid #30363d; display: flex; flex-direction: column; overflow: hidden; }
+.inspector-tabs { display: flex; border-bottom: 1px solid #30363d; }
+.inspector-tab { padding: 8px 16px; font-size: 12px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; }
+.inspector-tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+.inspector-content { flex: 1; overflow-y: auto; padding: 16px; font-size: 12px; }
+.inspector-content h3 { font-size: 13px; color: #58a6ff; margin-bottom: 8px; }
+.inspector-content pre { background: #0d1117; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 11px; line-height: 1.5; }
+.inspector-content .field { margin-bottom: 6px; }
+.inspector-content .field-key { color: #8b949e; }
+.inspector-content .field-val { color: #c9d1d9; }
+.query-panel { padding: 12px; border-top: 1px solid #30363d; }
+.query-panel textarea { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px; border-radius: 6px; font: 12px monospace; resize: vertical; min-height: 48px; }
+.query-panel button { margin-top: 6px; background: #238636; border: none; color: white; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.query-panel button:hover { background: #2ea043; }
+.query-response { padding: 12px; border-top: 1px solid #30363d; max-height: 250px; overflow-y: auto; font-size: 11px; }
+.query-response .result-line { padding: 2px 4px; margin: 2px 0; cursor: pointer; border-radius: 3px; }
+.query-response .result-line:hover { background: #21262d; }
+.empty-state { display: flex; flex: 1; align-items: center; justify-content: center; flex-direction: column; color: #484f58; font-size: 14px; }
+.empty-state .drop-zone { border: 2px dashed #30363d; border-radius: 12px; padding: 48px 64px; text-align: center; cursor: pointer; }
+.empty-state .drop-zone:hover { border-color: #58a6ff; color: #58a6ff; }
+
+canvas { display: block; }
+.timeline-lane { position: relative; }
+.timeline-label { font-size: 11px; color: #8b949e; padding: 2px 8px; white-space: nowrap; }
+.track-colors { }
+.track-SCN { background: #8957e5; }
+.track-SH { background: #3fb950; }
+.track-ACT { background: #d29922; }
+.track-EL { background: #db6d28; }
+.track-AMB { background: #58a6ff; }
+.track-MUS { background: #bc8cff; }
+.track-DLG { background: #f778ba; }
+.track-W { background: #f778ba; opacity: 0.6; }
+.track-TAG { background: #39d353; opacity: 0.5; }
+.track-USR { background: #8b949e; }
+
+.entry-block { position: absolute; height: 20px; border-radius: 3px; cursor: pointer; transition: opacity .15s; }
+.entry-block:hover { opacity: .85; outline: 2px solid white; }
+.entry-block.selected { outline: 2px solid white; opacity: 1; }
+.tooltip { position: absolute; background: #21262d; border: 1px solid #30363d; padding: 6px 10px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 100; white-space: nowrap; display: none; }
+.scene-band { position: absolute; height: 100%; opacity: 0.06; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PLF Viewer</h1>
+  <div class="toolbar">
+    <label for="file-input">Open</label>
+    <input type="file" id="file-input" accept=".plf">
+    <span id="zoom-label" style="font-size:11px;color:#8b949e">100%</span>
+    <input type="range" id="zoom-slider" min="20" max="300" value="100">
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<div class="main" id="main">
+  <div class="empty-state" id="empty-state">
+    <div class="drop-zone" id="drop-zone">
+      <div style="font-size:32px;margin-bottom:12px">&#x1F3AC;</div>
+      <div>Drop a .plf file here</div>
+      <div style="font-size:11px;margin-top:4px;color:#484f58">or click Open</div>
+    </div>
+  </div>
+
+  <div class="timeline-panel" id="timeline-panel" style="display:none">
+    <canvas id="timeline-canvas"></canvas>
+  </div>
+
+  <div class="inspector-panel" id="inspector-panel" style="display:none">
+    <div class="inspector-tabs">
+      <div class="inspector-tab active" data-tab="entry">Entry</div>
+      <div class="inspector-tab" data-tab="script">Script</div>
+      <div class="inspector-tab" data-tab="header">Header</div>
+      <div class="inspector-tab" data-tab="raw">Raw</div>
+    </div>
+    <div class="inspector-content" id="inspector-content"></div>
+    <div class="query-panel">
+      <textarea id="query-input" placeholder="Ask Model B something about this video... (e.g., 'Find emotional moments' or 'Add TAG:interior to interior shots')"></textarea>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button onclick="runQuery('query')">Ask (QUERY)</button>
+        <button onclick="runQuery('instruction')" style="background:#30363d">Edit (INSTRUCTION)</button>
+      </div>
+    </div>
+    <div class="query-response" id="query-response" style="display:none"></div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+let plfData = null;
+let selectedEntry = null;
+let zoom = 1.0;
+let activeTab = 'entry';
+
+const TRACKS_ORDER = ['SCN', 'SH', 'ACT', 'EL', 'DLG', 'W', 'AMB', 'MUS', 'TAG', 'USR'];
+
+const TRACK_LABELS = {
+  SCN:'Scene', SH:'Shot', ACT:'Action', EL:'Element',
+  DLG:'Dialogue', W:'Word', AMB:'Ambient', MUS:'Music',
+  TAG:'Tag', USR:'User'
+};
+
+const LANE_H = 28;
+const LABEL_W = 80;
+const PAD_TOP = 4;
+const PAD_LEFT = LABEL_W;
+
+async function loadFile(file) {
+  const text = await file.text();
+  const res = await fetch('/api/parse', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({content: text})
+  });
+  plfData = await res.json();
+  plfData._rawContent = text;
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('timeline-panel').style.display = 'block';
+  document.getElementById('inspector-panel').style.display = 'flex';
+  document.getElementById('stats').textContent =
+    `${plfData.stats.shots} shots · ${plfData.stats.dialogues} dialogues · ${plfData.stats.total_entries} entries · ${plfData.dur.toFixed(0)}s`;
+  selectedEntry = null;
+  zoom = 1.0;
+  document.getElementById('zoom-slider').value = 100;
+  renderTimeline();
+  showHeader();
+}
+
+function renderTimeline() {
+  const panel = document.getElementById('timeline-panel');
+  const canvas = document.getElementById('timeline-canvas');
+  const dpr = window.devicePixelRatio || 1;
+
+  const visibleTracks = TRACKS_ORDER.filter(t =>
+    plfData.timeline.some(e => e.track === t)
+  );
+
+  const totalW = plfData.dur * 20 * zoom + PAD_LEFT + 40;
+  const totalH = visibleTracks.length * LANE_H + PAD_TOP + 20;
+
+  canvas.width = totalW * dpr;
+  canvas.height = totalH * dpr;
+  canvas.style.width = totalW + 'px';
+  canvas.style.height = totalH + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, totalW, totalH);
+
+  // Scene bands
+  const sceneEntries = plfData.timeline.filter(e => e.track === 'SCN');
+  const sceneColors = ['rgba(137,87,229,0.04)', 'rgba(88,122,255,0.04)', 'rgba(210,153,34,0.04)'];
+  sceneEntries.forEach((scn, i) => {
+    const x = PAD_LEFT + scn.i * 20 * zoom;
+    const w = (scn.o - scn.i) * 20 * zoom;
+    ctx.fillStyle = sceneColors[i % sceneColors.length];
+    ctx.fillRect(x, 0, w, totalH);
+  });
+
+  visibleTracks.forEach((track, laneIdx) => {
+    const y = PAD_TOP + laneIdx * LANE_H;
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '11px monospace';
+    ctx.fillText(TRACK_LABELS[track], 4, y + 17);
+
+    const entries = plfData.timeline.filter(e => e.track === track);
+    entries.forEach(entry => {
+      const x = PAD_LEFT + entry.i * 20 * zoom;
+      const w = Math.max((entry.o - entry.i) * 20 * zoom, 2);
+      const isSelected = selectedEntry &&
+        selectedEntry.i === entry.i &&
+        selectedEntry.o === entry.o &&
+        selectedEntry.track === entry.track;
+
+      ctx.fillStyle = getTrackColor(track);
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(x, y + 4, w, LANE_H - 8);
+      ctx.globalAlpha = 1;
+
+      if (isSelected) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x, y + 4, w, LANE_H - 8);
+      }
+
+      if (w > 60 && track !== 'W') {
+        ctx.fillStyle = track === 'USR' ? '#0d1117' : '#fff';
+        ctx.font = '9px monospace';
+        const label = entry.fields.id || entry.fields.lbl || '';
+        if (label.length < 15) {
+          ctx.fillText(label, x + 3, y + 17);
+        }
+      }
+    });
+  });
+
+  // Time ruler
+  ctx.fillStyle = '#30363d';
+  ctx.fillRect(0, 0, LABEL_W, totalH);
+  for (let t = 0; t <= plfData.dur; t += Math.max(10, Math.floor(plfData.dur / 20))) {
+    const x = PAD_LEFT + t * 20 * zoom;
+    ctx.strokeStyle = '#30363d';
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, totalH);
+    ctx.stroke();
+    ctx.fillStyle = '#484f58';
+    ctx.font = '9px monospace';
+    ctx.fillText(formatTime(t), x + 2, 12);
+  }
+}
+
+function getTrackColor(track) {
+  const colors = {
+    SCN: '#8957e5', SH: '#3fb950', ACT: '#d29922', EL: '#db6d28',
+    AMB: '#58a6ff', MUS: '#bc8cff', DLG: '#f778ba', W: '#f778ba',
+    TAG: '#39d353', USR: '#8b949e'
+  };
+  return colors[track] || '#8b949e';
+}
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(1);
+  return `${m}:${sec.padStart(4, '0')}`;
+}
+
+document.getElementById('timeline-canvas').addEventListener('click', function(e) {
+  if (!plfData) return;
+  const canvas = document.getElementById('timeline-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / zoom - PAD_LEFT;
+  const my = (e.clientY - rect.top);
+  const t = mx / 20;
+
+  const visibleTracks = TRACKS_ORDER.filter(t =>
+    plfData.timeline.some(e => e.track === t)
+  );
+  const laneIdx = Math.floor((my - PAD_TOP) / LANE_H);
+  if (laneIdx < 0 || laneIdx >= visibleTracks.length) return;
+  const track = visibleTracks[laneIdx];
+
+  const entries = plfData.timeline.filter(e => e.track === track);
+  const hit = entries.find(e => e.i <= t && t <= e.o);
+  if (hit) {
+    selectedEntry = hit;
+    renderTimeline();
+    showEntryDetail(hit);
+  }
+});
+
+function showEntryDetail(entry) {
+  document.getElementById('inspector-content').innerHTML = `
+    <h3>T:${entry.track} — ${TRACK_LABELS[entry.track] || ''}</h3>
+    <div class="field"><span class="field-key">i:</span> <span class="field-val">${entry.i.toFixed(2)}</span></div>
+    <div class="field"><span class="field-key">o:</span> <span class="field-val">${entry.o.toFixed(2)}</span></div>
+    <div class="field"><span class="field-key">duration:</span> <span class="field-val">${(entry.o - entry.i).toFixed(2)}s</span></div>
+    ${Object.entries(entry.fields).filter(([k]) => !k.startsWith('_')).map(([k,v]) =>
+      `<div class="field"><span class="field-key">${k}:</span> <span class="field-val">${v}</span></div>`
+    ).join('')}
+    ${entry.fields._word ? `<div class="field"><span class="field-key">word:</span> <span class="field-val">"${entry.fields._word}"</span></div>` : ''}
+    ${entry.fields._text ? `<div class="field"><span class="field-key">text:</span> <span class="field-val">"${entry.fields._text}"</span></div>` : ''}
+    <pre style="margin-top:8px">${entry.raw}</pre>
+  `;
+  activeTab = 'entry';
+  document.querySelectorAll('.inspector-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('[data-tab="entry"]').classList.add('active');
+}
+
+function showHeader() {
+  document.getElementById('inspector-content').innerHTML = `
+    <h3>${plfData.proj}</h3>
+    <div class="field"><span class="field-key">ctx:</span> <span class="field-val">${plfData.ctx}</span></div>
+    <div class="field"><span class="field-key">fps:</span> <span class="field-val">${plfData.fps}</span></div>
+    <div class="field"><span class="field-key">ar:</span> <span class="field-val">${plfData.ar}</span></div>
+    <div class="field"><span class="field-key">dur:</span> <span class="field-val">${plfData.dur}s</span></div>
+    <div class="field"><span class="field-key">src:</span> <span class="field-val">${plfData.src}</span></div>
+    ${plfData.ref ? `<div class="field"><span class="field-key">ref:</span> <span class="field-val">${plfData.ref}</span></div>` : ''}
+    <h3 style="margin-top:12px">CAST</h3>
+    ${plfData.cast.map(c => `<div class="field">${c.id} — ${c.nombre}: ${c.desc}</div>`).join('')}
+    <h3 style="margin-top:12px">SCENES</h3>
+    ${plfData.scenes.map(s => `<div class="field">${s.id} — ${s.loc} (${s.time}, act ${s.act}): ${s.desc}</div>`).join('')}
+    <h3 style="margin-top:12px">CLIPS</h3>
+    ${plfData.clips.map(c => `<div class="field">${c.id} — ${c.file} (tc: ${c.tc})</div>`).join('')}
+  `;
+  activeTab = 'header';
+  document.querySelectorAll('.inspector-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('[data-tab="header"]').classList.add('active');
+}
+
+function showScript() {
+  const dlgs = plfData.timeline.filter(e => e.track === 'DLG');
+  const words = plfData.timeline.filter(e => e.track === 'W');
+  let html = '<h3>Script / Dialogue</h3>';
+  dlgs.forEach(dlg => {
+    const ws = words.filter(w =>
+      w.fields.spk === dlg.fields.spk &&
+      w.i >= dlg.i && w.o <= dlg.o
+    ).map(w => w.fields._word).join(' ');
+    html += `<div class="field" style="margin-bottom:8px">
+      <div style="color:#58a6ff">${dlg.fields.spk} <span style="color:#8b949e">(${formatTime(dlg.i)}–${formatTime(dlg.o)})</span></div>
+      <div style="color:#c9d1d9;margin-top:2px">${ws}</div>
+    </div>`;
+  });
+  document.getElementById('inspector-content').innerHTML = html;
+  activeTab = 'script';
+  document.querySelectorAll('.inspector-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('[data-tab="script"]').classList.add('active');
+}
+
+function showRaw() {
+  document.getElementById('inspector-content').innerHTML =
+    `<pre>${escapeHtml(plfData._rawContent || '')}</pre>`;
+  activeTab = 'raw';
+  document.querySelectorAll('.inspector-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('[data-tab="raw"]').classList.add('active');
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+document.querySelectorAll('.inspector-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    if (tab.dataset.tab === 'entry') return;
+    if (tab.dataset.tab === 'script') showScript();
+    else if (tab.dataset.tab === 'header') showHeader();
+    else if (tab.dataset.tab === 'raw') showRaw();
+  });
+});
+
+async function runQuery(mode) {
+  const input = document.getElementById('query-input').value.trim();
+  if (!input || !plfData) return;
+
+  const endpoint = mode === 'query' ? '/api/query' : '/api/instruction';
+  const body = mode === 'query'
+    ? { content: plfData._rawContent, query: input }
+    : { content: plfData._rawContent, instruction: input };
+
+  document.getElementById('query-response').style.display = 'block';
+  document.getElementById('query-response').innerHTML = '<div style="color:#8b949e">Thinking...</div>';
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+
+    let html = '';
+    if (data.mode === 'query') {
+      html += `<div style="color:#58a6ff;margin-bottom:6px">QUERY: ${escapeHtml(data.interpreted_query)}</div>`;
+      if (data.results) {
+        data.results.forEach(line => {
+          const timeMatch = line.match(/\[i:([\d.]+)\s+o:([\d.]+)\]/);
+          if (timeMatch) {
+            html += `<div class="result-line" onclick="jumpToTime(${parseFloat(timeMatch[1])})">${escapeHtml(line)}</div>`;
+          } else {
+            html += `<div class="result-line">${escapeHtml(line)}</div>`;
+          }
+        });
+      }
+      html += `<div style="color:#c9d1d9;margin-top:8px;font-style:italic">${escapeHtml(data.summary || '')}</div>`;
+    } else if (data.mode === 'instruction') {
+      html += `<div style="color:#58a6ff;margin-bottom:6px">INSTRUCTION: ${escapeHtml(data.instruction)}</div>`;
+      html += `<div style="color:#d29922">AFFECTED: ${data.affected} entries | CONFIRM: ${data.confirm ? 'yes' : 'no'}</div>`;
+      if (data.edits) {
+        data.edits.forEach(e => {
+          html += `<div class="result-line" style="color:${e.action === 'ADD' ? '#3fb950' : e.action === 'DELETE' ? '#f85149' : '#d29922'}">${e.action}: ${escapeHtml(e.line)}</div>`;
+        });
+      }
+    }
+
+    document.getElementById('query-response').innerHTML = html;
+  } catch (err) {
+    document.getElementById('query-response').innerHTML =
+      `<div style="color:#f85149">Error: ${err.message}</div>`;
+  }
+}
+
+function jumpToTime(t) {
+  selectedEntry = plfData.timeline.find(e => e.i <= t && t <= e.o);
+  if (selectedEntry) showEntryDetail(selectedEntry);
+  const panel = document.getElementById('timeline-panel');
+  panel.scrollLeft = LABEL_W + t * 20 * zoom - panel.clientWidth / 2;
+  renderTimeline();
+}
+
+document.getElementById('zoom-slider').addEventListener('input', function() {
+  zoom = parseInt(this.value) / 100;
+  document.getElementById('zoom-label').textContent = this.value + '%';
+  renderTimeline();
+});
+
+document.getElementById('file-input').addEventListener('change', function(e) {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#58a6ff'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = '#30363d'; });
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.style.borderColor = '#30363d';
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { selectedEntry = null; renderTimeline(); }
+  if (e.ctrlKey && e.key === 'o') { e.preventDefault(); document.getElementById('file-input').click(); }
+});
+</script>
+</body>
+</html>
