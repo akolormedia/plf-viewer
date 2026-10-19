@@ -6,8 +6,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "plf-python"))
 from plf import parse, get_entries
 from plf.model_b import create_client, build_context
 

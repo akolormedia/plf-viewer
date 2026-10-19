@@ -1,3 +1,5 @@
+# Install the plf library first (sibling repo):
+#   pip install -e ../plf-python
 fastapi>=0.115
 uvicorn>=0.30
 groq>=1.0
