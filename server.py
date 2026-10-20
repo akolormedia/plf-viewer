@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -14,6 +16,8 @@ from plf.model_b import create_client, build_context, list_providers
 from plf.model_b.providers import ensure_env_loaded
 
 app = FastAPI(title="PLF Viewer")
+
+PIPELINE_URL = os.environ.get("PLF_PIPELINE_URL", "http://127.0.0.1:8765")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -263,6 +267,162 @@ def api_video(path: str):
         ".webm": "video/webm", ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
     }.get(ext, "application/octet-stream")
     return FileResponse(p, media_type=media_type, filename=p.name)
+
+
+# --------------------------------------------------------------------------
+# PLF Generator (PLAN.md Fase G): browse the disk, queue videos, run them
+# through the pipeline service one at a time (CPU Whisper), write one
+# .raw.plf per video.
+# --------------------------------------------------------------------------
+
+@app.get("/api/fs/list")
+def api_fs_list(dir: str | None = None):
+    """Server-side file browser — the generator runs locally, so real paths."""
+    base = (Path(dir).expanduser() if dir else Path.home()).resolve()
+    if not base.is_dir():
+        return JSONResponse(status_code=400, content={"detail": f"not a directory: {base}"})
+    subdirs, videos = [], []
+    try:
+        for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                subdirs.append(entry.name)
+            elif entry.suffix.lower() in _MEDIA_EXTS:
+                videos.append(entry.name)
+    except PermissionError:
+        return JSONResponse(status_code=403, content={"detail": f"permission denied: {base}"})
+    return {
+        "dir": str(base),
+        "parent": str(base.parent) if base.parent != base else None,
+        "subdirs": subdirs[:300],
+        "videos": videos[:300],
+    }
+
+
+_jobs: list[dict] = []
+_jobs_lock = threading.Lock()
+_queue: "queue.Queue[dict]" = None  # type: ignore[assignment]
+_plf_out_allow: set[str] = set()
+_job_counter = 0
+
+
+def _call_pipeline(video_path: str, context: dict) -> str:
+    """POST to the pipeline service; returns the .raw.plf text.
+
+    Kept as a single function so tests can stub it.
+    """
+    import httpx
+
+    url = PIPELINE_URL.rstrip("/") + "/generate"
+    r = httpx.post(url, json={"video_path": video_path, "context": context}, timeout=7200)
+    if r.status_code != 200:
+        raise RuntimeError(f"pipeline HTTP {r.status_code}: {r.text[:600]}")
+    return r.text
+
+
+def _worker():
+    import queue
+
+    while True:
+        job = _queue.get()
+        with _jobs_lock:
+            job["state"] = "running"
+            job["started"] = time.time()
+        try:
+            text = _call_pipeline(job["video"], job["context"])
+            out = str(Path(job["video"]).with_suffix(".raw.plf"))
+            Path(out).write_text(text, encoding="utf-8")
+            _plf_out_allow.add(str(Path(out).resolve()))
+            with _jobs_lock:
+                job["state"] = "done"
+                job["out"] = out
+        except Exception as e:
+            with _jobs_lock:
+                job["state"] = "error"
+                job["error"] = str(e)
+        finally:
+            job["finished"] = time.time()
+            _queue.task_done()
+
+
+def _ensure_worker():
+    global _queue
+    if _queue is None:
+        import queue as _q
+
+        _queue = _q.Queue()
+        threading.Thread(target=_worker, daemon=True).start()
+
+
+class GenerateRequest(BaseModel):
+    files: list[str]
+    context: dict = {}
+
+
+@app.post("/api/generate")
+def api_generate(req: GenerateRequest):
+    """Queue one generation job per video (sequential worker)."""
+    global _job_counter
+    _ensure_worker()
+    created = []
+    for video in req.files[:50]:
+        p = Path(video).expanduser()
+        if not p.is_file() or p.suffix.lower() not in _MEDIA_EXTS:
+            continue
+        with _jobs_lock:
+            _job_counter += 1
+            job = {
+                "id": _job_counter,
+                "video": str(p),
+                "name": p.name,
+                "state": "queued",
+                "out": None,
+                "error": None,
+                "context": req.context,
+            }
+            _jobs.append(job)
+        _queue.put(job)
+        created.append(job["id"])
+    return {"queued": created}
+
+
+@app.get("/api/generate/jobs")
+def api_generate_jobs():
+    with _jobs_lock:
+        return {
+            "jobs": [
+                {k: j[k] for k in ("id", "name", "video", "state", "out", "error", "started", "finished") if k in j}
+                for j in _jobs[-50:]
+            ]
+        }
+
+
+@app.get("/api/generate/file")
+def api_generate_file(path: str):
+    """Read a finished .raw.plf (allow-listed: only job outputs)."""
+    p = Path(path).expanduser().resolve()
+    if str(p) not in _plf_out_allow or not p.is_file():
+        return JSONResponse(status_code=404, content={"detail": "unknown output file"})
+    return {"name": p.name, "content": p.read_text(encoding="utf-8")}
+
+
+@app.get("/api/generate/service")
+def api_generate_service():
+    """Is the pipeline service reachable? Used for the UI banner."""
+    import httpx
+
+    try:
+        r = httpx.get(PIPELINE_URL.rstrip("/") + "/status", timeout=3)
+        if r.status_code == 200:
+            return {"ok": True, "url": PIPELINE_URL, "status": r.json()}
+        return {"ok": False, "url": PIPELINE_URL, "detail": f"HTTP {r.status_code}"}
+    except Exception as e:
+        return {
+            "ok": False,
+            "url": PIPELINE_URL,
+            "detail": f"{type(e).__name__}: {e}. Start it with: cd plf-pipeline && python3 -m pipeline.server",
+        }
 
 
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")

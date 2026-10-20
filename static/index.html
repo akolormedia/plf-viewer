@@ -92,6 +92,41 @@ canvas { display: block; }
 #search-input:focus { border-color: #58a6ff; outline: none; }
 .apply-btn { margin-top: 8px; background: #238636; border: none; color: #fff; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 .apply-btn:hover { background: #2ea043; }
+.view-btn { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.view-btn.active { color: #58a6ff; border-color: #58a6ff; }
+.generate-panel { flex: 1; overflow-y: auto; padding: 18px 24px; }
+.generate-panel h2 { font-size: 15px; color: #58a6ff; margin-bottom: 10px; }
+.generate-panel h3 { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+.gen-service { font-size: 11px; padding: 6px 10px; border-radius: 6px; margin-bottom: 14px; border: 1px solid #30363d; }
+.gen-service.ok { color: #3fb950; }
+.gen-service.bad { color: #d29922; }
+.gen-cols { display: flex; gap: 14px; align-items: flex-start; }
+.gen-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin-bottom: 14px; }
+.gen-box label { display: block; font-size: 11px; color: #8b949e; margin: 8px 0 3px; }
+.gen-box input[type=text], .gen-box input[type=number], .gen-box select, .gen-box textarea {
+  width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+  padding: 5px 8px; border-radius: 6px; font: 12px monospace; font-family: inherit;
+}
+.gen-box textarea { resize: vertical; min-height: 46px; }
+.path-row { display: flex; gap: 6px; }
+.path-row button, .gen-box button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.path-row button:hover, .gen-box button:hover { background: #30363d; }
+.gen-list { margin-top: 8px; max-height: 260px; overflow-y: auto; font-size: 12px; border: 1px solid #30363d; border-radius: 6px; }
+.gen-list .row { padding: 3px 10px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.gen-list .row:hover { background: #21262d; }
+.gen-list .row.dir { color: #58a6ff; }
+.gen-list .row.video { color: #c9d1d9; }
+.gen-selected { margin-top: 8px; font-size: 11px; color: #8b949e; }
+.gen-row { display: flex; gap: 10px; }
+.gen-row > div { flex: 1; }
+.gen-jobs-table { font-size: 12px; }
+.gen-jobs-table .job { display: flex; gap: 10px; align-items: center; padding: 4px 6px; border-bottom: 1px solid #21262d; }
+.state-chip { padding: 1px 8px; border-radius: 10px; font-size: 11px; min-width: 62px; text-align: center; }
+.state-queued { background: #30363d; color: #8b949e; }
+.state-running { background: #1f6feb33; color: #58a6ff; }
+.state-done { background: #23863633; color: #3fb950; }
+.state-error { background: #f8514933; color: #f85149; }
+.job-err { color: #f85149; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 480px; }
 </style>
 </head>
 <body>
@@ -99,6 +134,8 @@ canvas { display: block; }
 <header>
   <h1>PLF Viewer</h1>
   <div class="toolbar">
+    <div class="view-btn active" id="view-btn-timeline" onclick="showView('timeline')">Timeline</div>
+    <div class="view-btn" id="view-btn-generate" onclick="showView('generate')">Generate</div>
     <label for="file-input">Open</label>
     <input type="file" id="file-input" accept=".plf" multiple>
     <label for="video-input" title="Load a source video manually — normally the video referenced in CLIPS is loaded automatically">Video</label>
@@ -156,6 +193,53 @@ canvas { display: block; }
       </div>
     </div>
     <div class="query-response" id="query-response" style="display:none"></div>
+  </div>
+</div>
+
+<!-- PLF Generator (Fase G): local disk browser + context + sequential jobs -->
+<div class="generate-panel" id="generate-panel" style="display:none">
+  <h2>&#x2699;&#xFE0F; PLF Generator <span style="color:#484f58;font-weight:400;font-size:12px">— one .raw.plf per video, written next to the source</span></h2>
+  <div class="gen-service" id="gen-service">checking pipeline service&#8230;</div>
+
+  <div class="gen-cols">
+    <div class="gen-box" style="flex:1.3">
+      <h3>1 &middot; Source <span style="float:right;text-transform:none;letter-spacing:0">
+        <button onclick="genSelectAll()" style="font-size:11px">Select all videos</button>
+        <button onclick="genClearSel()" style="font-size:11px">Clear</button></span></h3>
+      <div class="path-row">
+        <input type="text" id="gen-path" placeholder="path (e.g. ~/Documents/Reel2026/MB)" onkeydown="if(event.key==='Enter')genGo()">
+        <button onclick="genGo()">Go</button>
+      </div>
+      <div class="gen-list" id="gen-list"><div class="row" style="color:#484f58">loading&#8230;</div></div>
+      <div class="gen-selected" id="gen-selected">0 selected</div>
+    </div>
+
+    <div class="gen-box" style="flex:1">
+      <h3>2 &middot; Context <span style="float:right;text-transform:none;letter-spacing:0">
+        <label style="display:inline;color:#58a6ff;cursor:pointer;margin:0">load context.json
+          <input type="file" accept=".json,application/json" style="display:none" onchange="genLoadCtx(this.files[0]);this.value=''"></label></span></h3>
+      <label>Description</label>
+      <textarea id="gen-desc" placeholder="De que trata el video / campaign brief"></textarea>
+      <label>Characters <span style="color:#484f58">(one per line: Nombre: descripcion)</span></label>
+      <textarea id="gen-chars" placeholder="Presentadora: mujer mid-40s, traje oscuro"></textarea>
+      <label>Locations <span style="color:#484f58">(one per line: nombre: descripcion)</span></label>
+      <textarea id="gen-locs" placeholder="oficina: interior corporativo luminoso"></textarea>
+      <div class="gen-row">
+        <div><label>Language</label>
+          <select id="gen-lang"><option value="es">es</option><option value="en">en</option><option value="pt">pt</option><option value="fr">fr</option></select></div>
+        <div><label>Genre</label>
+          <select id="gen-genre"><option value="corporativo">corporativo</option><option value="drama">drama</option><option value="doc">doc</option><option value="comedia">comedia</option><option value="accion">accion</option></select></div>
+        <div><label>FPS</label><input type="number" id="gen-fps" value="24" min="1" max="120"></div>
+        <div><label>Aspect</label>
+          <select id="gen-ar"><option>16:9</option><option>1:1</option><option>9:16</option><option>2.39:1</option><option>4:3</option></select></div>
+      </div>
+      <button class="apply-btn" id="gen-start" onclick="genStart()" style="width:100%;padding:8px">&#x26A1; Generate</button>
+    </div>
+  </div>
+
+  <div class="gen-box">
+    <h3>3 &middot; Jobs</h3>
+    <div class="gen-jobs-table" id="gen-jobs"><div style="color:#484f58">No jobs yet. Finished PLFs open in the Timeline automatically.</div></div>
   </div>
 </div>
 
@@ -872,6 +956,224 @@ function saveSettings() {
   if (model) localStorage.setItem(LS_MODEL, model);
   else localStorage.removeItem(LS_MODEL);
   closeSettings();
+}
+
+// ------------------------------------------------------------------
+// Fase G — PLF Generator: view switch, disk browser, job queue.
+// ------------------------------------------------------------------
+
+let genDir = null;                 // current directory shown
+const genSel = new Set();          // selected absolute video paths
+const genOpened = new Set();       // job ids already opened as tabs
+let genPoll = null;
+
+function showView(which) {
+  const gen = which === 'generate';
+  document.getElementById('generate-panel').style.display = gen ? 'block' : 'none';
+  document.getElementById('main').style.display = gen ? 'none' : 'flex';
+  document.getElementById('view-btn-generate').classList.toggle('active', gen);
+  document.getElementById('view-btn-timeline').classList.toggle('active', !gen);
+  if (gen) {
+    checkGenService();
+    if (genDir === null) genGo();
+    if (!genPoll) genPoll = setInterval(pollJobs, 2000);
+  }
+}
+
+async function checkGenService() {
+  const el = document.getElementById('gen-service');
+  try {
+    const r = await fetch('/api/generate/service');
+    const s = await r.json();
+    if (s.ok) {
+      el.className = 'gen-service ok';
+      el.innerHTML = '&#10003; pipeline service ready at ' + s.url +
+        (s.status && s.status.components ? ' &middot; components: ' + JSON.stringify(s.status.components) : '');
+    } else {
+      el.className = 'gen-service bad';
+      el.innerHTML = '&#9888; pipeline service unreachable at ' + s.url + ' — ' + (s.detail || '');
+    }
+  } catch (e) {
+    el.className = 'gen-service bad';
+    el.textContent = 'pipeline service unreachable: ' + e;
+  }
+}
+
+async function genGo(path) {
+  const input = document.getElementById('gen-path');
+  const dir = path !== undefined ? path : input.value.trim();
+  try {
+    const url = '/api/fs/list' + (dir ? '?dir=' + encodeURIComponent(dir) : '');
+    const r = await fetch(url);
+    if (!r.ok) {
+      const err = await r.json();
+      document.getElementById('gen-list').innerHTML = `<div class="row" style="color:#f85149">${err.detail || r.status}</div>`;
+      return;
+    }
+    const data = await r.json();
+    genDir = data.dir;
+    input.value = genDir;
+    renderGenList(data);
+  } catch (e) {
+    document.getElementById('gen-list').innerHTML = `<div class="row" style="color:#f85149">${e}</div>`;
+  }
+}
+
+function renderGenList(data) {
+  const el = document.getElementById('gen-list');
+  let html = '';
+  if (data.parent) {
+    html += `<div class="row dir" onclick="genGo(${JSON.stringify(data.parent)})">&#x2191; ..</div>`;
+  }
+  for (const d of data.subdirs) {
+    html += `<div class="row dir" onclick="genGo(${JSON.stringify(data.dir + '/' + d)})">&#x1F4C1; ${d}</div>`;
+  }
+  for (const v of data.videos) {
+    const full = data.dir + '/' + v;
+    const checked = genSel.has(full);
+    html += `<div class="row video" data-path="${full.replace(/"/g, '&quot;')}" onclick="genToggle(this)">
+      <input type="checkbox" ${checked ? 'checked' : ''}> &#x1F3AC; ${v}</div>`;
+  }
+  if (!data.subdirs.length && !data.videos.length) {
+    html += '<div class="row" style="color:#484f58">empty directory</div>';
+  }
+  el.innerHTML = html;
+  updateGenSel();
+}
+
+function genToggle(row) {
+  const path = row.dataset.path;
+  const box = row.querySelector('input[type=checkbox]');
+  if (genSel.has(path)) { genSel.delete(path); box.checked = false; }
+  else { genSel.add(path); box.checked = true; }
+  updateGenSel();
+}
+
+function genSelectAll() {
+  document.querySelectorAll('#gen-list .row.video').forEach(r => {
+    genSel.add(r.dataset.path);
+    r.querySelector('input[type=checkbox]').checked = true;
+  });
+  updateGenSel();
+}
+
+function genClearSel() {
+  genSel.clear();
+  document.querySelectorAll('#gen-list .row.video input').forEach(b => b.checked = false);
+  updateGenSel();
+}
+
+function updateGenSel() {
+  document.getElementById('gen-selected').textContent =
+    genSel.size + ' video' + (genSel.size === 1 ? '' : 's') + ' selected';
+  document.getElementById('gen-start').textContent =
+    genSel.size ? `⚡ Generate ${genSel.size} file${genSel.size === 1 ? '' : 's'}` : '⚡ Generate';
+}
+
+function parseNameDesc(line) {
+  const i = line.indexOf(':');
+  if (i < 0) return { name: line.trim(), desc: '' };
+  return { name: line.slice(0, i).trim(), desc: line.slice(i + 1).trim() };
+}
+
+function genContext() {
+  const lines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+  return {
+    description: document.getElementById('gen-desc').value.trim(),
+    characters: lines('gen-chars').map(parseNameDesc),
+    locations: lines('gen-locs').map(parseNameDesc),
+    language: document.getElementById('gen-lang').value,
+    genre: document.getElementById('gen-genre').value,
+    fps: parseInt(document.getElementById('gen-fps').value, 10) || 24,
+    aspect_ratio: document.getElementById('gen-ar').value,
+  };
+}
+
+function genLoadCtx(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const c = JSON.parse(reader.result);
+      const toLines = arr => (arr || []).map(x =>
+        typeof x === 'string' ? x : `${x.name || x.nome || ''}: ${x.desc || x.description || ''}`.trim());
+      if (c.description) document.getElementById('gen-desc').value = c.description;
+      const ch = toLines(c.characters);
+      const lo = toLines(c.locations);
+      if (ch.length) document.getElementById('gen-chars').value = ch.join('\n');
+      if (lo.length) document.getElementById('gen-locs').value = lo.join('\n');
+      if (c.language) document.getElementById('gen-lang').value = c.language;
+      if (c.genre) document.getElementById('gen-genre').value = c.genre;
+      if (c.fps) document.getElementById('gen-fps').value = c.fps;
+      if (c.aspect_ratio) document.getElementById('gen-ar').value = c.aspect_ratio;
+    } catch (e) { alert('Invalid context.json: ' + e); }
+  };
+  reader.readAsText(file);
+}
+
+async function genStart() {
+  const files = [...genSel];
+  if (!files.length) { alert('Select at least one video first.'); return; }
+  const btn = document.getElementById('gen-start');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files, context: genContext() })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.status);
+    alert(`Queued ${data.queued.length} job${data.queued.length === 1 ? '' : 's'} — watch progress in Jobs below.`);
+    pollJobs();
+  } catch (e) {
+    alert('Queue failed: ' + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pollJobs() {
+  if (document.getElementById('generate-panel').style.display === 'none') return;
+  let jobs = [];
+  try {
+    const r = await fetch('/api/generate/jobs');
+    jobs = (await r.json()).jobs || [];
+  } catch (e) { return; }
+  if (!jobs.length) return;
+
+  const el = document.getElementById('gen-jobs');
+  el.innerHTML = jobs.map(j => {
+    const chip = `<span class="state-chip state-${j.state}">${j.state}</span>`;
+    let extra = '';
+    if (j.state === 'error') extra = `<span class="job-err">${(j.error || '').replace(/</g, '&lt;')}</span>`;
+    else if (j.state === 'done') {
+      if (!genOpened.has(j.id)) {
+        genOpened.add(j.id);
+        openGenerated(j);
+        extra = `<span style="color:#3fb950">&#10003; opened in Timeline</span>`;
+      } else {
+        extra = `<span style="color:#3fb950">&#10003; ${(j.out || '').split('/').pop()}</span>`;
+      }
+    }
+    return `<div class="job">${chip}<span>${j.name}</span>${extra}</div>`;
+  }).join('');
+
+  if (jobs.some(j => j.state === 'queued' || j.state === 'running')) {
+    if (!genPoll) genPoll = setInterval(pollJobs, 2000);
+  } else if (genPoll) {
+    clearInterval(genPoll);
+    genPoll = null;
+  }
+}
+
+async function openGenerated(job) {
+  try {
+    const r = await fetch('/api/generate/file?path=' + encodeURIComponent(job.out));
+    if (!r.ok) return;
+    const f = await r.json();
+    loadText(f.content, f.name);
+  } catch (e) { /* viewer offline */ }
 }
 
 document.getElementById('settings-btn').addEventListener('click', openSettings);

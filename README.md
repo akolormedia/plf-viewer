@@ -24,6 +24,11 @@ Interactive web viewer and AI query interface for PLF (PromptLine Format) files.
   Mistral, Anthropic (Claude) and local Ollama; configure via the **&#9881;
   settings** in the toolbar (provider + key stored in your browser) or via
   env vars / `.env`
+- **PLF Generator** — the **Generate** tab browses your disk server-side,
+  queues one job per selected video (sequential worker, Whisper is CPU-bound),
+  writes one `.raw.plf` next to each source and auto-opens the results in
+  the Timeline. Requires the pipeline service:
+  `cd plf-pipeline && python3 -m pipeline.server`
 - **Keyboard shortcuts** — `Ctrl+O` open, `Ctrl+F` search, `Space` play/pause,
   `Esc` deselect
 
@@ -45,7 +50,8 @@ No key is needed to open the app. For AI queries, either set a key in the
 ```
 plf-viewer/
   server.py           ← FastAPI backend (parse, query, instruction,
-                        proposal, providers, apply, media resolve/stream)
+                        proposal, providers, apply, media resolve/stream,
+                        generator: fs browse + job queue → pipeline service)
   static/index.html   ← Single-page frontend (Vanilla JS, Canvas timeline,
                         video monitor, multi-doc tabs, search)
   requirements.txt
