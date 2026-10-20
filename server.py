@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from plf import parse, get_entries
+from plf import parse, get_entries, apply_edits
 from plf.model_b import create_client, build_context, list_providers
 from plf.model_b.providers import ensure_env_loaded
 
@@ -137,6 +137,26 @@ def api_instruction(req: AIRequest):
 @app.post("/api/proposal")
 def api_proposal(req: AIRequest):
     return _run_ai(req, "proposal")
+
+
+class ApplyRequest(BaseModel):
+    content: str
+    edits: list[dict]
+
+
+@app.post("/api/apply")
+def api_apply(req: ApplyRequest):
+    """Apply Model B instruction edits → edited PLF text (Fase V2)."""
+    try:
+        result = apply_edits(req.content, req.edits)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    return {
+        "plf_text": result.text,
+        "applied": result.applied,
+        "skipped": result.skipped,
+        "warnings": result.warnings,
+    }
 
 
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")

@@ -6,17 +6,24 @@ Interactive web viewer and AI query interface for PLF (PromptLine Format) files.
 
 ## Features
 
-- **Drag & drop** `.plf` file upload
+- **Drag & drop** `.plf` file upload (multiple files → tabs)
 - **Timeline visualization** — color-coded track lanes (10 track types)
 - **Click to inspect** — entry details, fields, raw PLF line
 - **4 tabs** — Entry, Script (dialogue), Header, Raw PLF
 - **Zoom control** — 20% to 300%
-- **Model B integration** — QUERY / INSTRUCTION / PROPOSAL modes
+- **Embedded video monitor** — load the source video and play the *PLF cut*
+  (T:SH segments back-to-back); clicking any entry seeks the video;
+  `Space` toggles playback
+- **Entry search** — `Ctrl+F`, matches highlighted on the timeline, click a
+  result to jump
+- **Model B integration** — QUERY / INSTRUCTION / PROPOSAL modes; applying an
+  INSTRUCTION edits the PLF server-side and downloads the result
 - **Multi-provider AI** — Groq, OpenAI, Together, OpenRouter, DeepSeek, xAI,
   Mistral, Anthropic (Claude) and local Ollama; configure via the **&#9881;
   settings** in the toolbar (provider + key stored in your browser) or via
   env vars / `.env`
-- **Keyboard shortcuts** — `Ctrl+O` open, `Esc` deselect
+- **Keyboard shortcuts** — `Ctrl+O` open, `Ctrl+F` search, `Space` play/pause,
+  `Esc` deselect
 
 ## Quick start
 
@@ -36,8 +43,9 @@ No key is needed to open the app. For AI queries, either set a key in the
 ```
 plf-viewer/
   server.py           ← FastAPI backend (parse, query, instruction,
-                        proposal, providers endpoints)
-  static/index.html   ← Single-page frontend (Vanilla JS, Canvas timeline)
+                        proposal, providers, apply endpoints)
+  static/index.html   ← Single-page frontend (Vanilla JS, Canvas timeline,
+                        video monitor, multi-doc tabs, search)
   requirements.txt
 ```
 

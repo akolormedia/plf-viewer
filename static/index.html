@@ -74,6 +74,24 @@ canvas { display: block; }
 .modal .buttons button.primary { background: #238636; border-color: #238636; color: #fff; }
 .modal .buttons button:hover { background: #30363d; }
 .modal .buttons button.primary:hover { background: #2ea043; }
+.doc-tabs { display: none; background: #0d1117; border-bottom: 1px solid #30363d; padding: 0 8px; gap: 4px; align-items: center; min-height: 30px; }
+.doc-tab { font-size: 11px; padding: 4px 10px; border-radius: 6px 6px 0 0; background: #161b22; border: 1px solid #30363d; border-bottom: none; color: #8b949e; cursor: pointer; display: flex; gap: 6px; align-items: center; }
+.doc-tab.active { color: #58a6ff; background: #21262d; }
+.doc-tab .close { color: #484f58; margin-left: 2px; }
+.doc-tab .close:hover { color: #f85149; }
+.center-col { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.video-panel { height: 200px; background: #010409; border-top: 1px solid #30363d; display: none; align-items: center; gap: 14px; padding: 8px 12px; }
+.video-panel video { height: 100%; max-width: 62%; background: #000; border-radius: 6px; }
+.video-side { font-size: 11px; color: #8b949e; display: flex; flex-direction: column; gap: 6px; }
+.video-side button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; width: fit-content; }
+.video-side button:hover { background: #30363d; }
+.search-results { display: none; background: #161b22; border-bottom: 1px solid #30363d; padding: 6px 12px; font-size: 11px; max-height: 130px; overflow-y: auto; }
+.search-results .result-line { padding: 2px 6px; cursor: pointer; border-radius: 3px; color: #c9d1d9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-results .result-line:hover { background: #21262d; }
+#search-input { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 3px 8px; border-radius: 6px; font-size: 11px; width: 170px; font-family: inherit; }
+#search-input:focus { border-color: #58a6ff; outline: none; }
+.apply-btn { margin-top: 8px; background: #238636; border: none; color: #fff; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.apply-btn:hover { background: #2ea043; }
 </style>
 </head>
 <body>
@@ -82,7 +100,10 @@ canvas { display: block; }
   <h1>PLF Viewer</h1>
   <div class="toolbar">
     <label for="file-input">Open</label>
-    <input type="file" id="file-input" accept=".plf">
+    <input type="file" id="file-input" accept=".plf" multiple>
+    <label for="video-input" title="Load the source video to play the PLF cut">Video</label>
+    <input type="file" id="video-input" accept="video/*">
+    <input type="search" id="search-input" placeholder="Search entries (Ctrl+F)">
     <span id="zoom-label" style="font-size:11px;color:#8b949e">100%</span>
     <input type="range" id="zoom-slider" min="20" max="300" value="100">
     <button class="settings-btn" id="settings-btn" title="AI settings">&#9881;</button>
@@ -90,17 +111,31 @@ canvas { display: block; }
   <div class="stats" id="stats"></div>
 </header>
 
+<div class="doc-tabs" id="doc-tabs"></div>
+<div class="search-results" id="search-results"></div>
+
 <div class="main" id="main">
   <div class="empty-state" id="empty-state">
     <div class="drop-zone" id="drop-zone">
       <div style="font-size:32px;margin-bottom:12px">&#x1F3AC;</div>
       <div>Drop a .plf file here</div>
-      <div style="font-size:11px;margin-top:4px;color:#484f58">or click Open</div>
+      <div style="font-size:11px;margin-top:4px;color:#484f58">or click Open (multiple files allowed)</div>
     </div>
   </div>
 
-  <div class="timeline-panel" id="timeline-panel" style="display:none">
-    <canvas id="timeline-canvas"></canvas>
+  <div class="center-col" id="center-col" style="display:none">
+    <div class="timeline-panel" id="timeline-panel">
+      <canvas id="timeline-canvas"></canvas>
+    </div>
+    <div class="video-panel" id="video-panel">
+      <video id="video" preload="auto"></video>
+      <div class="video-side">
+        <button id="play-btn" onclick="togglePlay()">&#9654; Play cut</button>
+        <div id="seg-label">segment –/–</div>
+        <div id="time-label">src 0:00.0</div>
+        <div style="color:#484f58;max-width:180px">Plays the T:SH segments back-to-back. Click any entry in the timeline to seek.</div>
+      </div>
+    </div>
   </div>
 
   <div class="inspector-panel" id="inspector-panel" style="display:none">
@@ -116,6 +151,7 @@ canvas { display: block; }
       <div style="display:flex;gap:6px;margin-top:6px">
         <button onclick="runQuery('query')">Ask (QUERY)</button>
         <button onclick="runQuery('instruction')" style="background:#30363d">Edit (INSTRUCTION)</button>
+        <button onclick="runQuery('proposal')" style="background:#30363d">Propose</button>
       </div>
     </div>
     <div class="query-response" id="query-response" style="display:none"></div>
@@ -148,6 +184,16 @@ let selectedEntry = null;
 let zoom = 1.0;
 let activeTab = 'entry';
 
+// Fase V2: multi-document, playback, search
+let documents = [];          // {name, raw, data}
+let activeDocIndex = -1;
+let searchMatchSet = new Set();
+let playhead = -1;           // source-video time shown on the timeline, -1 = off
+let segments = [];           // T:SH segments of the active doc (the "cut")
+let playing = false;
+let videoURL = null;
+let lastInstructionEdits = null;
+
 const TRACKS_ORDER = ['SCN', 'SH', 'ACT', 'EL', 'DLG', 'W', 'AMB', 'MUS', 'TAG', 'USR'];
 
 const TRACK_LABELS = {
@@ -163,26 +209,59 @@ const PAD_LEFT = LABEL_W;
 
 async function loadFile(file) {
   const text = await file.text();
+  await loadText(text, file.name);
+}
+
+async function loadText(text, name) {
   const res = await fetch('/api/parse', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({content: text})
   });
-  plfData = await res.json();
-  plfData._rawContent = text;
-  document.getElementById('empty-state').style.display = 'none';
-  document.getElementById('timeline-panel').style.display = 'block';
-  document.getElementById('inspector-panel').style.display = 'flex';
-  document.getElementById('stats').textContent =
-    `${plfData.stats.shots} shots · ${plfData.stats.dialogues} dialogues · ${plfData.stats.total_entries} entries · ${plfData.dur.toFixed(0)}s`;
+  const data = await res.json();
+  data._rawContent = text;
+  documents.push({ name: name || `doc-${documents.length + 1}.plf`, raw: text, data });
+  setActiveDoc(documents.length - 1);
+}
+
+function setActiveDoc(idx) {
+  activeDocIndex = idx;
+  plfData = documents[idx].data;
   selectedEntry = null;
-  zoom = 1.0;
-  document.getElementById('zoom-slider').value = 100;
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('center-col').style.display = 'flex';
+  document.getElementById('inspector-panel').style.display = 'flex';
+  updateStats();
+  rebuildSegments();
+  renderDocTabs();
+  updateSearch();
   renderTimeline();
   showHeader();
 }
 
+function updateStats() {
+  document.getElementById('stats').textContent =
+    `${documents[activeDocIndex].name} · ${plfData.stats.shots} shots · ${plfData.stats.dialogues} dialogues · ${plfData.stats.total_entries} entries · ${plfData.dur.toFixed(0)}s`;
+}
+
+function renderDocTabs() {
+  const bar = document.getElementById('doc-tabs');
+  bar.style.display = documents.length > 1 ? 'flex' : 'none';
+  bar.innerHTML = documents.map((d, i) =>
+    `<div class="doc-tab ${i === activeDocIndex ? 'active' : ''}" onclick="setActiveDoc(${i})">` +
+    `${escapeHtml(d.name)}<span class="close" onclick="closeDoc(${i}, event)">&times;</span></div>`
+  ).join('');
+}
+
+function closeDoc(idx, ev) {
+  ev.stopPropagation();
+  documents.splice(idx, 1);
+  if (!documents.length) { location.reload(); return; }
+  setActiveDoc(Math.min(idx, documents.length - 1));
+}
+
 function renderTimeline() {
+  if (!plfData) return;
   const panel = document.getElementById('timeline-panel');
   const canvas = document.getElementById('timeline-canvas');
   const dpr = window.devicePixelRatio || 1;
@@ -213,6 +292,17 @@ function renderTimeline() {
     ctx.fillRect(x, 0, w, totalH);
   });
 
+  // Playback playhead (source-video time)
+  if (playhead >= 0) {
+    const px = PAD_LEFT + playhead * 20 * zoom;
+    ctx.strokeStyle = '#f85149';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, totalH);
+    ctx.stroke();
+  }
+
   visibleTracks.forEach((track, laneIdx) => {
     const y = PAD_TOP + laneIdx * LANE_H;
     ctx.fillStyle = '#8b949e';
@@ -237,6 +327,14 @@ function renderTimeline() {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 1.5;
         ctx.strokeRect(x, y + 4, w, LANE_H - 8);
+      }
+
+      if (searchMatchSet.has(entry)) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.setLineDash([3, 2]);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x - 1, y + 3, w + 2, LANE_H - 6);
+        ctx.setLineDash([]);
       }
 
       if (w > 60 && track !== 'W') {
@@ -300,6 +398,7 @@ document.getElementById('timeline-canvas').addEventListener('click', function(e)
   const hit = entries.find(e => e.i <= t && t <= e.o);
   if (hit) {
     selectedEntry = hit;
+    seekVideoTo(t);
     renderTimeline();
     showEntryDetail(hit);
   }
@@ -389,17 +488,17 @@ async function runQuery(mode) {
   const input = document.getElementById('query-input').value.trim();
   if (!input || !plfData) return;
 
-  const endpoint = mode === 'query' ? '/api/query' : '/api/instruction';
+  const endpoints = { query: '/api/query', instruction: '/api/instruction', proposal: '/api/proposal' };
   const ai = aiSettings();
-  const body = mode === 'query'
-    ? { content: plfData._rawContent, query: input, ...ai }
-    : { content: plfData._rawContent, instruction: input, ...ai };
+  const body = mode === 'instruction'
+    ? { content: plfData._rawContent, instruction: input, ...ai }
+    : { content: plfData._rawContent, query: input, ...ai };
 
   document.getElementById('query-response').style.display = 'block';
   document.getElementById('query-response').innerHTML = '<div style="color:#8b949e">Thinking...</div>';
 
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch(endpoints[mode] || endpoints.query, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify(body)
@@ -434,6 +533,23 @@ async function runQuery(mode) {
           html += `<div class="result-line" style="color:${e.action === 'ADD' ? '#3fb950' : e.action === 'DELETE' ? '#f85149' : '#d29922'}">${e.action}: ${escapeHtml(e.line)}</div>`;
         });
       }
+      if (data.edits && data.edits.length) {
+        lastInstructionEdits = data.edits;
+        html += `<button class="apply-btn" onclick="applyEdits()">&#10003; Apply ${data.edits.length} edits &amp; download</button>`;
+      } else {
+        lastInstructionEdits = null;
+      }
+    } else if (data.mode === 'proposal') {
+      html += `<div style="color:#58a6ff;margin-bottom:6px">PROPOSAL: ${escapeHtml(data.proposal)}</div>`;
+      if (data.reasoning) {
+        html += `<div style="color:#8b949e;margin-bottom:6px">${escapeHtml(data.reasoning)}</div>`;
+      }
+      if (data.structure) {
+        data.structure.forEach(line => {
+          html += `<div class="result-line">${escapeHtml(line)}</div>`;
+        });
+      }
+      html += `<div style="color:#d29922;margin-top:6px">APPLY: ${escapeHtml(String(data.apply || ''))}</div>`;
     }
 
     document.getElementById('query-response').innerHTML = html;
@@ -443,11 +559,65 @@ async function runQuery(mode) {
   }
 }
 
+async function applyEdits() {
+  if (!lastInstructionEdits || !lastInstructionEdits.length || !plfData) return;
+  const respEl = document.getElementById('query-response');
+
+  const res = await fetch('/api/apply', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ content: plfData._rawContent, edits: lastInstructionEdits })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    respEl.innerHTML += `<div style="color:#f85149;margin-top:6px">Apply failed: ${escapeHtml(data.detail || 'error')}</div>`;
+    return;
+  }
+
+  // refresh the active document with the edited text
+  const doc = documents[activeDocIndex];
+  const pres = await fetch('/api/parse', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({content: data.plf_text})
+  });
+  doc.raw = data.plf_text;
+  doc.data = await pres.json();
+  doc.data._rawContent = data.plf_text;
+  plfData = doc.data;
+  selectedEntry = null;
+  rebuildSegments();
+  updateStats();
+  updateSearch();
+  renderTimeline();
+
+  downloadText(doc.name, data.plf_text);
+  lastInstructionEdits = null;
+
+  let msg = `<div style="color:#3fb950;margin-top:6px">&#10003; Applied ${data.applied} edits — downloaded as ${escapeHtml(doc.name)}</div>`;
+  if (data.skipped && data.skipped.length) {
+    msg += `<div style="color:#d29922">${data.skipped.length} skipped: ${escapeHtml(data.skipped.map(s => s.error || '?').join(', '))}</div>`;
+  }
+  if (data.warnings && data.warnings.length) {
+    msg += `<div style="color:#d29922">Validation: ${escapeHtml(data.warnings.join(' | '))}</div>`;
+  }
+  respEl.innerHTML += msg;
+}
+
+function downloadText(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type: 'text/plain'}));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function jumpToTime(t) {
   selectedEntry = plfData.timeline.find(e => e.i <= t && t <= e.o);
   if (selectedEntry) showEntryDetail(selectedEntry);
   const panel = document.getElementById('timeline-panel');
   panel.scrollLeft = LABEL_W + t * 20 * zoom - panel.clientWidth / 2;
+  seekVideoTo(t);
   renderTimeline();
 }
 
@@ -457,8 +627,9 @@ document.getElementById('zoom-slider').addEventListener('input', function() {
   renderTimeline();
 });
 
-document.getElementById('file-input').addEventListener('change', function(e) {
-  if (e.target.files[0]) loadFile(e.target.files[0]);
+document.getElementById('file-input').addEventListener('change', async function(e) {
+  for (const f of e.target.files) await loadFile(f);
+  e.target.value = '';
 });
 
 const dropZone = document.getElementById('drop-zone');
@@ -469,6 +640,125 @@ dropZone.addEventListener('drop', e => {
   dropZone.style.borderColor = '#30363d';
   if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
 });
+
+// ---- Video monitor: play the PLF cut (T:SH segments back-to-back) ----
+let playSegIdx = -1;
+
+function loadVideo(file) {
+  const v = document.getElementById('video');
+  if (videoURL) URL.revokeObjectURL(videoURL);
+  videoURL = URL.createObjectURL(file);
+  v.src = videoURL;
+  document.getElementById('video-panel').style.display = 'flex';
+  playhead = -1;
+  playing = false;
+}
+
+function rebuildSegments() {
+  segments = (plfData ? plfData.timeline.filter(e => e.track === 'SH') : [])
+    .slice().sort((a, b) => a.i - b.i);
+  playSegIdx = -1;
+  document.getElementById('seg-label').textContent = `segment –/${segments.length || '–'}`;
+}
+
+function segmentAt(t) {
+  for (let k = 0; k < segments.length; k++) {
+    if (t >= segments[k].i - 0.01 && t < segments[k].o) return k;
+  }
+  return -1;
+}
+
+function togglePlay() {
+  const v = document.getElementById('video');
+  if (!v.src) { document.getElementById('video-input').click(); return; }
+  playing = !playing;
+  const btn = document.getElementById('play-btn');
+  if (playing) {
+    if (segmentAt(v.currentTime) === -1 && segments.length) {
+      v.currentTime = segments[Math.max(playSegIdx, 0)].i;
+    }
+    v.play();
+    btn.innerHTML = '&#10074;&#10074; Pause';
+    requestAnimationFrame(playLoop);
+  } else {
+    v.pause();
+    btn.innerHTML = '&#9654; Play cut';
+  }
+}
+
+function seekVideoTo(t) {
+  const v = document.getElementById('video');
+  if (!v.src) return;
+  v.currentTime = t;
+  playhead = t;
+}
+
+function playLoop() {
+  if (!playing) return;
+  const v = document.getElementById('video');
+  let idx = segmentAt(v.currentTime);
+  if (idx === -1) {
+    // outside every segment: skip to the next one (or stop at the end of the cut)
+    const next = segments.findIndex(s => s.i > v.currentTime + 0.01);
+    if (next === -1) {
+      playing = false;
+      v.pause();
+      playhead = -1;
+      document.getElementById('play-btn').innerHTML = '&#9654; Play cut';
+      renderTimeline();
+      return;
+    }
+    v.currentTime = segments[next].i;
+    idx = next;
+  }
+  playSegIdx = idx;
+  playhead = v.currentTime;
+  document.getElementById('seg-label').textContent = `segment ${idx + 1}/${segments.length}`;
+  document.getElementById('time-label').textContent = `src ${formatTime(v.currentTime)}`;
+  const panel = document.getElementById('timeline-panel');
+  const x = LABEL_W + v.currentTime * 20 * zoom;
+  if (x > panel.scrollLeft + panel.clientWidth - 80 || x < panel.scrollLeft + 40) {
+    panel.scrollLeft = x - panel.clientWidth / 2;
+  }
+  renderTimeline();
+  requestAnimationFrame(playLoop);
+}
+
+document.getElementById('video').addEventListener('ended', () => {
+  playing = false;
+  playhead = -1;
+  document.getElementById('play-btn').innerHTML = '&#9654; Play cut';
+  renderTimeline();
+});
+document.getElementById('video-input').addEventListener('change', e => {
+  if (e.target.files[0]) loadVideo(e.target.files[0]);
+});
+
+// ---- Entry search (Ctrl+F) ----
+function updateSearch() {
+  const q = document.getElementById('search-input').value.trim().toLowerCase();
+  const list = document.getElementById('search-results');
+  searchMatchSet = new Set();
+  if (!q || !plfData) {
+    list.style.display = 'none';
+    list.innerHTML = '';
+    if (plfData) renderTimeline();
+    return;
+  }
+  const matches = plfData.timeline.filter(e => {
+    const hay = (e.raw + ' ' + Object.entries(e.fields).map(([k, v]) => k + ':' + v).join(' ')).toLowerCase();
+    if (hay.includes(q)) { searchMatchSet.add(e); return true; }
+    return false;
+  });
+  list.style.display = 'block';
+  list.innerHTML = `<span style="color:#8b949e">${matches.length} matches</span>` +
+    matches.slice(0, 60).map(e =>
+      `<div class="result-line" onclick="jumpToTime(${e.i})">` +
+      `<span style="color:#8b949e">${formatTime(e.i)}</span> T:${e.track} ${escapeHtml(e.raw.slice(0, 120))}</div>`
+    ).join('');
+  renderTimeline();
+}
+document.getElementById('search-input').addEventListener('input', updateSearch);
 
 // ---- AI provider settings (stored per-browser in localStorage) ----
 const LS_PROVIDER = 'plf.ai.provider';
@@ -551,6 +841,10 @@ loadProviders();
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { selectedEntry = null; renderTimeline(); }
   if (e.ctrlKey && e.key === 'o') { e.preventDefault(); document.getElementById('file-input').click(); }
+  if (e.ctrlKey && e.key === 'f') { e.preventDefault(); document.getElementById('search-input').focus(); }
+  if (e.key === ' ' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA' && document.getElementById('video').src) {
+    e.preventDefault(); togglePlay();
+  }
 });
 </script>
 </body>
