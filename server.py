@@ -7,7 +7,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from plf import parse, get_entries
-from plf.model_b import create_client, build_context
+from plf.model_b import create_client, build_context, list_providers
+from plf.model_b.providers import ensure_env_loaded
 
 app = FastAPI(title="PLF Viewer")
 
@@ -63,50 +64,79 @@ def api_parse(req: ParseRequest):
     }
 
 
-class QueryRequest(BaseModel):
+@app.get("/api/providers")
+def api_providers():
+    """Provider list for the settings UI. Reports key *presence*, never keys."""
+    return {"providers": list_providers()}
+
+
+class AIRequest(BaseModel):
     content: str
-    query: str
+    query: str | None = None
+    instruction: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+
+
+def _run_ai(req: AIRequest, mode: str):
+    """Shared path for QUERY / INSTRUCTION / PROPOSAL."""
+    ensure_env_loaded()
+    plf = parse(req.content)
+    text = req.query if mode != "instruction" else req.instruction
+    ctx = build_context(plf, text)
+
+    try:
+        client = create_client(
+            provider=req.provider, model=req.model, api_key=req.api_key
+        )
+        if mode == "query":
+            result = client.query(text, plf_context=ctx)
+            return {
+                "interpreted_query": result.interpreted_query,
+                "results": result.results,
+                "summary": result.summary,
+                "mode": "query",
+            }
+        if mode == "instruction":
+            result = client.instruct(text, plf_context=ctx)
+            return {
+                "instruction": result.instruction,
+                "edits": [
+                    {"action": e.action, "i": e.i, "o": e.o, "track": e.track, "line": e.line}
+                    for e in result.edits
+                ],
+                "affected": result.affected,
+                "confirm": result.confirm,
+                "mode": "instruction",
+            }
+        result = client.propose(text, plf_context=ctx)
+        return {
+            "proposal": result.proposal,
+            "reasoning": result.reasoning,
+            "structure": result.structure,
+            "apply": result.apply,
+            "mode": "proposal",
+        }
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"detail": f"{type(e).__name__}: {e}"})
 
 
 @app.post("/api/query")
-def api_query(req: QueryRequest):
-    plf = parse(req.content)
-    ctx = build_context(plf, req.query)
-
-    client = create_client()
-    result = client.query(req.query, plf_context=ctx)
-
-    return {
-        "interpreted_query": result.interpreted_query,
-        "results": result.results,
-        "summary": result.summary,
-        "mode": "query",
-    }
-
-
-class InstructionRequest(BaseModel):
-    content: str
-    instruction: str
+def api_query(req: AIRequest):
+    return _run_ai(req, "query")
 
 
 @app.post("/api/instruction")
-def api_instruction(req: InstructionRequest):
-    plf = parse(req.content)
-    ctx = build_context(plf, req.instruction)
+def api_instruction(req: AIRequest):
+    return _run_ai(req, "instruction")
 
-    client = create_client()
-    result = client.instruct(req.instruction, plf_context=ctx)
 
-    return {
-        "instruction": result.instruction,
-        "edits": [
-            {"action": e.action, "i": e.i, "o": e.o, "track": e.track, "line": e.line}
-            for e in result.edits
-        ],
-        "affected": result.affected,
-        "confirm": result.confirm,
-        "mode": "instruction",
-    }
+@app.post("/api/proposal")
+def api_proposal(req: AIRequest):
+    return _run_ai(req, "proposal")
 
 
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")

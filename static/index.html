@@ -58,6 +58,22 @@ canvas { display: block; }
 .entry-block.selected { outline: 2px solid white; opacity: 1; }
 .tooltip { position: absolute; background: #21262d; border: 1px solid #30363d; padding: 6px 10px; border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 100; white-space: nowrap; display: none; }
 .scene-band { position: absolute; height: 100%; opacity: 0.06; pointer-events: none; }
+.settings-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-left: 8px; }
+.settings-btn:hover { background: #30363d; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 200; display: none; align-items: center; justify-content: center; }
+.modal { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 20px; width: 420px; max-width: 92vw; }
+.modal h2 { font-size: 14px; color: #58a6ff; margin-bottom: 14px; }
+.modal label { display: block; font-size: 12px; color: #8b949e; margin: 10px 0 4px; }
+.modal select, .modal input { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 8px; border-radius: 6px; font: 12px monospace; }
+.modal .hint { font-size: 11px; color: #484f58; margin-top: 4px; }
+.modal .key-status { font-size: 11px; margin-top: 4px; }
+.key-ok { color: #3fb950; }
+.key-missing { color: #d29922; }
+.modal .buttons { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+.modal .buttons button { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.modal .buttons button.primary { background: #238636; border-color: #238636; color: #fff; }
+.modal .buttons button:hover { background: #30363d; }
+.modal .buttons button.primary:hover { background: #2ea043; }
 </style>
 </head>
 <body>
@@ -69,6 +85,7 @@ canvas { display: block; }
     <input type="file" id="file-input" accept=".plf">
     <span id="zoom-label" style="font-size:11px;color:#8b949e">100%</span>
     <input type="range" id="zoom-slider" min="20" max="300" value="100">
+    <button class="settings-btn" id="settings-btn" title="AI settings">&#9881;</button>
   </div>
   <div class="stats" id="stats"></div>
 </header>
@@ -106,6 +123,24 @@ canvas { display: block; }
 </div>
 
 <div class="tooltip" id="tooltip"></div>
+
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <h2>&#9881; AI Settings</h2>
+    <label for="settings-provider">Provider</label>
+    <select id="settings-provider"></select>
+    <div class="key-status" id="settings-key-status"></div>
+    <label for="settings-apikey">API key <span style="color:#484f58">(stored in this browser only)</span></label>
+    <input type="password" id="settings-apikey" placeholder="leave empty to use server .env / env vars" autocomplete="off">
+    <label for="settings-model">Model <span style="color:#484f58">(empty = provider default)</span></label>
+    <input type="text" id="settings-model" placeholder="e.g. llama-3.3-70b-versatile" autocomplete="off">
+    <div class="hint">Keys saved here never leave your browser except to call the selected provider through this server.</div>
+    <div class="buttons">
+      <button onclick="closeSettings()">Cancel</button>
+      <button class="primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
 
 <script>
 let plfData = null;
@@ -355,9 +390,10 @@ async function runQuery(mode) {
   if (!input || !plfData) return;
 
   const endpoint = mode === 'query' ? '/api/query' : '/api/instruction';
+  const ai = aiSettings();
   const body = mode === 'query'
-    ? { content: plfData._rawContent, query: input }
-    : { content: plfData._rawContent, instruction: input };
+    ? { content: plfData._rawContent, query: input, ...ai }
+    : { content: plfData._rawContent, instruction: input, ...ai };
 
   document.getElementById('query-response').style.display = 'block';
   document.getElementById('query-response').innerHTML = '<div style="color:#8b949e">Thinking...</div>';
@@ -369,6 +405,12 @@ async function runQuery(mode) {
       body: JSON.stringify(body)
     });
     const data = await res.json();
+    if (!res.ok) {
+      document.getElementById('query-response').innerHTML =
+        `<div style="color:#f85149">${escapeHtml(data.detail || 'request failed')}</div>` +
+        `<div style="color:#8b949e;margin-top:4px">Configure provider/key via &#9881; in the toolbar.</div>`;
+      return;
+    }
 
     let html = '';
     if (data.mode === 'query') {
@@ -427,6 +469,83 @@ dropZone.addEventListener('drop', e => {
   dropZone.style.borderColor = '#30363d';
   if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
 });
+
+// ---- AI provider settings (stored per-browser in localStorage) ----
+const LS_PROVIDER = 'plf.ai.provider';
+const LS_MODEL = 'plf.ai.model';
+const LS_KEY_PREFIX = 'plf.ai.key.';
+let providersCache = [];
+
+function aiSettings() {
+  const provider = localStorage.getItem(LS_PROVIDER) || '';
+  const model = localStorage.getItem(LS_MODEL) || '';
+  const key = provider ? (localStorage.getItem(LS_KEY_PREFIX + provider) || '') : '';
+  return {
+    provider: provider || null,
+    model: model || null,
+    api_key: key || null,
+  };
+}
+
+async function loadProviders() {
+  try {
+    const res = await fetch('/api/providers');
+    providersCache = (await res.json()).providers || [];
+  } catch (e) { providersCache = []; }
+  const sel = document.getElementById('settings-provider');
+  sel.innerHTML = providersCache.map(p => {
+    const mark = p.requires_key && !p.has_key ? ' — needs key' : '';
+    return `<option value="${p.name}">${p.label}${mark}</option>`;
+  }).join('');
+  const saved = localStorage.getItem(LS_PROVIDER);
+  if (saved && providersCache.some(p => p.name === saved)) sel.value = saved;
+  updateKeyStatus();
+}
+
+function updateKeyStatus() {
+  const name = document.getElementById('settings-provider').value;
+  const p = providersCache.find(x => x.name === name);
+  const el = document.getElementById('settings-key-status');
+  const browserKey = localStorage.getItem(LS_KEY_PREFIX + name);
+  if (!p) { el.textContent = ''; return; }
+  if (!p.requires_key) {
+    el.innerHTML = '<span class="key-ok">&#10003; no key needed (local)</span>';
+  } else if (browserKey || p.has_key) {
+    el.innerHTML = '<span class="key-ok">&#10003; key configured</span>';
+  } else {
+    el.innerHTML = `<span class="key-missing">&#9888; no key: set ${p.env_key} on the server or type one below</span>`;
+  }
+  document.getElementById('settings-model').placeholder = p.default_model || '';
+}
+
+function openSettings() {
+  document.getElementById('settings-apikey').value = '';
+  document.getElementById('settings-model').value = localStorage.getItem(LS_MODEL) || '';
+  updateKeyStatus();
+  document.getElementById('settings-modal').style.display = 'flex';
+}
+
+function closeSettings() {
+  document.getElementById('settings-modal').style.display = 'none';
+}
+
+function saveSettings() {
+  const name = document.getElementById('settings-provider').value;
+  const key = document.getElementById('settings-apikey').value.trim();
+  const model = document.getElementById('settings-model').value.trim();
+  if (name) localStorage.setItem(LS_PROVIDER, name);
+  if (key) localStorage.setItem(LS_KEY_PREFIX + name, key);
+  if (model) localStorage.setItem(LS_MODEL, model);
+  else localStorage.removeItem(LS_MODEL);
+  closeSettings();
+}
+
+document.getElementById('settings-btn').addEventListener('click', openSettings);
+document.getElementById('settings-provider').addEventListener('change', updateKeyStatus);
+document.getElementById('settings-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeSettings();
+});
+loadProviders();
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {

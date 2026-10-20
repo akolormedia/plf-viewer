@@ -11,7 +11,11 @@ Interactive web viewer and AI query interface for PLF (PromptLine Format) files.
 - **Click to inspect** — entry details, fields, raw PLF line
 - **4 tabs** — Entry, Script (dialogue), Header, Raw PLF
 - **Zoom control** — 20% to 300%
-- **Model B integration** — QUERY and INSTRUCTION modes via Groq API
+- **Model B integration** — QUERY / INSTRUCTION / PROPOSAL modes
+- **Multi-provider AI** — Groq, OpenAI, Together, OpenRouter, DeepSeek, xAI,
+  Mistral, Anthropic (Claude) and local Ollama; configure via the **&#9881;
+  settings** in the toolbar (provider + key stored in your browser) or via
+  env vars / `.env`
 - **Keyboard shortcuts** — `Ctrl+O` open, `Esc` deselect
 
 ## Quick start
@@ -19,16 +23,20 @@ Interactive web viewer and AI query interface for PLF (PromptLine Format) files.
 ```bash
 cd plf-viewer
 pip install -r requirements.txt
-export GROQ_API_KEY=your_key_here
 python server.py
 # Open http://localhost:8000
 ```
+
+No key is needed to open the app. For AI queries, either set a key in the
+&#9881; settings dialog (stored in localStorage) or put one in the root
+`.env` / environment, e.g. `GROQ_API_KEY=...` or `OPENAI_API_KEY=...`.
 
 ## Architecture
 
 ```
 plf-viewer/
-  server.py           ← FastAPI backend (parse, query, instruction endpoints)
+  server.py           ← FastAPI backend (parse, query, instruction,
+                        proposal, providers endpoints)
   static/index.html   ← Single-page frontend (Vanilla JS, Canvas timeline)
   requirements.txt
 ```
