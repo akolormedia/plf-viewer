@@ -101,7 +101,7 @@ canvas { display: block; }
   <div class="toolbar">
     <label for="file-input">Open</label>
     <input type="file" id="file-input" accept=".plf" multiple>
-    <label for="video-input" title="Load the source video to play the PLF cut">Video</label>
+    <label for="video-input" title="Load a source video manually — normally the video referenced in CLIPS is loaded automatically">Video</label>
     <input type="file" id="video-input" accept="video/*">
     <input type="search" id="search-input" placeholder="Search entries (Ctrl+F)">
     <span id="zoom-label" style="font-size:11px;color:#8b949e">100%</span>
@@ -133,7 +133,8 @@ canvas { display: block; }
         <button id="play-btn" onclick="togglePlay()">&#9654; Play cut</button>
         <div id="seg-label">segment –/–</div>
         <div id="time-label">src 0:00.0</div>
-        <div style="color:#484f58;max-width:180px">Plays the T:SH segments back-to-back. Click any entry in the timeline to seek.</div>
+        <div id="video-src-label" style="color:#484f58;max-width:230px;overflow:hidden;text-overflow:ellipsis"></div>
+        <div style="color:#484f58;max-width:230px">Plays the T:SH segments back-to-back. Click any entry in the timeline to seek.</div>
       </div>
     </div>
   </div>
@@ -237,6 +238,7 @@ function setActiveDoc(idx) {
   updateSearch();
   renderTimeline();
   showHeader();
+  autoLoadVideo();
 }
 
 function updateStats() {
@@ -255,6 +257,8 @@ function renderDocTabs() {
 
 function closeDoc(idx, ev) {
   ev.stopPropagation();
+  const doc = documents[idx];
+  if (doc.videoSrc && doc.videoSrc.startsWith('blob:')) URL.revokeObjectURL(doc.videoSrc);
   documents.splice(idx, 1);
   if (!documents.length) { location.reload(); return; }
   setActiveDoc(Math.min(idx, documents.length - 1));
@@ -645,13 +649,53 @@ dropZone.addEventListener('drop', e => {
 let playSegIdx = -1;
 
 function loadVideo(file) {
-  const v = document.getElementById('video');
+  const url = URL.createObjectURL(file);
   if (videoURL) URL.revokeObjectURL(videoURL);
-  videoURL = URL.createObjectURL(file);
-  v.src = videoURL;
+  videoURL = url;
+  if (documents[activeDocIndex]) {
+    documents[activeDocIndex].videoSrc = url;
+    documents[activeDocIndex].videoLabel = `${file.name} (manual)`;
+  }
+  applyVideoSrc(url, `${file.name} (manual)`);
+}
+
+let currentVideoURL = null;
+
+function applyVideoSrc(url, label) {
+  const v = document.getElementById('video');
+  if (currentVideoURL !== url) {
+    currentVideoURL = url;
+    v.src = url;
+    playhead = -1;
+    playing = false;
+  }
   document.getElementById('video-panel').style.display = 'flex';
-  playhead = -1;
-  playing = false;
+  document.getElementById('video-src-label').textContent = label || '';
+  document.getElementById('play-btn').innerHTML = '&#9654; Play cut';
+}
+
+// Auto-load: the PLF's CLIPS file: names are resolved server-side so the
+// matching video opens with the document (Fase V2 addendum).
+async function autoLoadVideo() {
+  const doc = documents[activeDocIndex];
+  if (!doc) return;
+  if (doc.videoSrc) { applyVideoSrc(doc.videoSrc, doc.videoLabel || ''); return; }
+  const files = (doc.data.clips || []).map(c => c.file).filter(Boolean);
+  if (!files.length) return;
+  try {
+    const res = await fetch('/api/resolve_media', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({files})
+    });
+    const data = await res.json();
+    const hit = files.map(f => [f, data.media[f]]).find(([, url]) => url);
+    if (hit) {
+      doc.videoSrc = hit[1];
+      doc.videoLabel = `${hit[0]} (auto)`;
+      if (documents[activeDocIndex] === doc) applyVideoSrc(doc.videoSrc, doc.videoLabel);
+    }
+  } catch (e) { /* media server unavailable — manual Video button still works */ }
 }
 
 function rebuildSegments() {

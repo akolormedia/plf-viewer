@@ -1,9 +1,12 @@
 import io
 import json
+import os
 from pathlib import Path
+from urllib.parse import quote
+
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from plf import parse, get_entries, apply_edits
@@ -157,6 +160,109 @@ def api_apply(req: ApplyRequest):
         "skipped": result.skipped,
         "warnings": result.warnings,
     }
+
+
+# --------------------------------------------------------------------------
+# Media auto-load: resolve the CLIPS file: names to real files on disk and
+# stream them back to the browser (which cannot read arbitrary paths).
+# --------------------------------------------------------------------------
+
+_MEDIA_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", "target", ".venv", "venv"}
+_WALK_DEPTH = 3
+_media_cache: dict[str, str | None] = {}
+_media_allow: set[str] = set()
+
+
+def _search_roots() -> list[Path]:
+    roots: list[Path] = []
+    for d in os.environ.get("PLF_MEDIA_DIRS", "").split(os.pathsep):
+        if d:
+            roots.append(Path(d).expanduser())
+    here = Path(__file__).resolve().parent
+    home = Path.home()
+    roots += [
+        Path.cwd(),
+        here,
+        *list(here.parents)[:2],
+        home / "Documents",
+        home / "Movies",
+        home / "Downloads",
+        home / "Desktop",
+    ]
+    seen, out = set(), []
+    for r in roots:
+        rp = r.expanduser()
+        if rp not in seen:
+            seen.add(rp)
+            out.append(rp)
+    return out
+
+
+def _resolve_media(name: str) -> str | None:
+    """Find `name` (a bare filename from CLIPS file:) under the search roots."""
+    if name in _media_cache:
+        return _media_cache[name]
+    base = Path(name).name  # never allow path traversal from PLF content
+    if Path(base).suffix.lower() not in _MEDIA_EXTS:
+        _media_cache[name] = None
+        return None
+
+    hit: str | None = None
+    for root in _search_roots():
+        if not root.is_dir():
+            continue
+        direct = root / base
+        if direct.is_file():
+            hit = str(direct)
+            break
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = len(Path(dirpath).relative_to(root).parts)
+            if depth >= _WALK_DEPTH:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
+            if base in filenames:
+                hit = str(Path(dirpath) / base)
+                break
+        if hit:
+            break
+
+    _media_cache[name] = hit
+    return hit
+
+
+class ResolveMediaRequest(BaseModel):
+    files: list[str]
+
+
+@app.post("/api/resolve_media")
+def api_resolve_media(req: ResolveMediaRequest):
+    """Map CLIPS filenames to stream URLs (null when not found on disk)."""
+    media = {}
+    for f in req.files[:20]:
+        path = _resolve_media(f)
+        if path:
+            _media_allow.add(str(Path(path).resolve()))
+            media[f] = f"/api/video?path={quote(path)}"
+        else:
+            media[f] = None
+    return {"media": media}
+
+
+@app.get("/api/video")
+def api_video(path: str):
+    """Stream an allow-listed media file (Range support comes from Starlette,
+    which the HTML5 video element needs for seeking)."""
+    p = Path(path).expanduser().resolve()
+    if str(p) not in _media_allow or p.suffix.lower() not in _MEDIA_EXTS or not p.is_file():
+        return JSONResponse(status_code=404, content={"detail": "media not allowed or not found"})
+    ext = p.suffix.lower()
+    media_type = {
+        ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime",
+        ".webm": "video/webm", ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(p, media_type=media_type, filename=p.name)
 
 
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")

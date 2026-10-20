@@ -11,9 +11,11 @@ Interactive web viewer and AI query interface for PLF (PromptLine Format) files.
 - **Click to inspect** — entry details, fields, raw PLF line
 - **4 tabs** — Entry, Script (dialogue), Header, Raw PLF
 - **Zoom control** — 20% to 300%
-- **Embedded video monitor** — load the source video and play the *PLF cut*
-  (T:SH segments back-to-back); clicking any entry seeks the video;
-  `Space` toggles playback
+- **Embedded video monitor** — the video referenced in `CLIPS file:` is
+  **resolved and loaded automatically** (searched server-side, streamed via
+  `/api/video` with Range support); the *PLF cut* plays back (T:SH segments
+  back-to-back); clicking any entry seeks the video; `Space` toggles playback;
+  manual load button as fallback
 - **Entry search** — `Ctrl+F`, matches highlighted on the timeline, click a
   result to jump
 - **Model B integration** — QUERY / INSTRUCTION / PROPOSAL modes; applying an
@@ -43,7 +45,7 @@ No key is needed to open the app. For AI queries, either set a key in the
 ```
 plf-viewer/
   server.py           ← FastAPI backend (parse, query, instruction,
-                        proposal, providers, apply endpoints)
+                        proposal, providers, apply, media resolve/stream)
   static/index.html   ← Single-page frontend (Vanilla JS, Canvas timeline,
                         video monitor, multi-doc tabs, search)
   requirements.txt
