@@ -1019,20 +1019,24 @@ async function genGo(path) {
   }
 }
 
+function escAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
 function renderGenList(data) {
   const el = document.getElementById('gen-list');
   let html = '';
   if (data.parent) {
-    html += `<div class="row dir" onclick="genGo(${JSON.stringify(data.parent)})">&#x2191; ..</div>`;
+    html += `<div class="row dir" data-dir="${escAttr(data.parent)}" onclick="genGo(this.dataset.dir)">&#x2191; ..</div>`;
   }
   for (const d of data.subdirs) {
-    html += `<div class="row dir" onclick="genGo(${JSON.stringify(data.dir + '/' + d)})">&#x1F4C1; ${d}</div>`;
+    html += `<div class="row dir" data-dir="${escAttr(data.dir + '/' + d)}" onclick="genGo(this.dataset.dir)">&#x1F4C1; ${escAttr(d)}</div>`;
   }
   for (const v of data.videos) {
     const full = data.dir + '/' + v;
     const checked = genSel.has(full);
-    html += `<div class="row video" data-path="${full.replace(/"/g, '&quot;')}" onclick="genToggle(this)">
-      <input type="checkbox" ${checked ? 'checked' : ''}> &#x1F3AC; ${v}</div>`;
+    html += `<div class="row video" data-path="${escAttr(full)}" onclick="genToggle(this)">
+      <input type="checkbox" ${checked ? 'checked' : ''}> &#x1F3AC; ${escAttr(v)}</div>`;
   }
   if (!data.subdirs.length && !data.videos.length) {
     html += '<div class="row" style="color:#484f58">empty directory</div>';
