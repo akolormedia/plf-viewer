@@ -92,14 +92,26 @@ canvas { display: block; }
 #search-input:focus { border-color: #58a6ff; outline: none; }
 .apply-btn { margin-top: 8px; background: #238636; border: none; color: #fff; padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 .apply-btn:hover { background: #2ea043; }
+.gen-box button:disabled, .apply-btn:disabled { opacity: .45; cursor: not-allowed; }
 .view-btn { background: #21262d; border: 1px solid #30363d; color: #8b949e; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 .view-btn.active { color: #58a6ff; border-color: #58a6ff; }
 .generate-panel { flex: 1; overflow-y: auto; padding: 18px 24px; }
 .generate-panel h2 { font-size: 15px; color: #58a6ff; margin-bottom: 10px; }
 .generate-panel h3 { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
-.gen-service { font-size: 11px; padding: 6px 10px; border-radius: 6px; margin-bottom: 14px; border: 1px solid #30363d; }
-.gen-service.ok { color: #3fb950; }
-.gen-service.bad { color: #d29922; }
+.gen-service { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 8px 12px; border-radius: 6px; margin-bottom: 14px; border: 1px solid #30363d; background: #161b22; }
+.gen-dot { width: 9px; height: 9px; border-radius: 50%; background: #484f58; flex: none; }
+.gen-service.ok { color: #3fb950; border-color: #23863655; }
+.gen-service.ok .gen-dot { background: #3fb950; box-shadow: 0 0 6px #3fb95088; }
+.gen-service.bad { color: #f85149; border-color: #f8514955; }
+.gen-service.bad .gen-dot { background: #f85149; box-shadow: 0 0 6px #f8514988; }
+.gen-service code { background: #0d1117; padding: 1px 6px; border-radius: 4px; color: #d29922; font-size: 11px; }
+.gen-comps { display: flex; gap: 6px; }
+.gen-comp { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: #21262d; color: #8b949e; }
+.gen-comp.yes { color: #3fb950; }
+.gen-comp.no { color: #d29922; }
+.gen-recheck { margin-left: auto; font-size: 11px; padding: 2px 10px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; color: #c9d1d9; cursor: pointer; }
+.gen-recheck:hover { background: #30363d; }
+.gen-recheck:disabled { opacity: .5; cursor: wait; }
 .gen-cols { display: flex; gap: 14px; align-items: flex-start; }
 .gen-box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin-bottom: 14px; }
 .gen-box label { display: block; font-size: 11px; color: #8b949e; margin: 8px 0 3px; }
@@ -126,6 +138,12 @@ canvas { display: block; }
 .state-running { background: #1f6feb33; color: #58a6ff; }
 .state-done { background: #23863633; color: #3fb950; }
 .state-error { background: #f8514933; color: #f85149; }
+.state-cancelled { background: #30363d; color: #8b949e; text-decoration: line-through; }
+.state-stopping { background: #d2992233; color: #d29922; }
+.job-actions { display: flex; gap: 4px; margin-left: auto; }
+.job-actions button { font-size: 11px; padding: 1px 8px; border-radius: 5px; background: #21262d; border: 1px solid #30363d; color: #8b949e; cursor: pointer; }
+.job-actions button:hover { color: #c9d1d9; border-color: #8b949e; }
+.job-actions button.danger:hover { color: #f85149; border-color: #f85149; }
 .job-err { color: #f85149; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 480px; }
 </style>
 </head>
@@ -199,7 +217,7 @@ canvas { display: block; }
 <!-- PLF Generator (Fase G): local disk browser + context + sequential jobs -->
 <div class="generate-panel" id="generate-panel" style="display:none">
   <h2>&#x2699;&#xFE0F; PLF Generator <span style="color:#484f58;font-weight:400;font-size:12px">— one .raw.plf per video, written next to the source</span></h2>
-  <div class="gen-service" id="gen-service">checking pipeline service&#8230;</div>
+  <div class="gen-service" id="gen-service"><span class="gen-dot"></span><span id="gen-service-text">checking pipeline service&#8230;</span><span id="gen-service-comps"></span><button class="gen-recheck" onclick="checkGenService(true)">Re-check</button></div>
 
   <div class="gen-cols">
     <div class="gen-box" style="flex:1.3">
@@ -965,7 +983,9 @@ function saveSettings() {
 let genDir = null;                 // current directory shown
 const genSel = new Set();          // selected absolute video paths
 const genOpened = new Set();       // job ids already opened as tabs
-let genPoll = null;
+let genPoll = null;                // jobs+service poll interval
+let genSvcOk = null;               // last known pipeline-service state
+let genSvcTick = 0;
 
 function showView(which) {
   const gen = which === 'generate';
@@ -974,29 +994,51 @@ function showView(which) {
   document.getElementById('view-btn-generate').classList.toggle('active', gen);
   document.getElementById('view-btn-timeline').classList.toggle('active', !gen);
   if (gen) {
-    checkGenService();
+    checkGenService(true);
     if (genDir === null) genGo();
     if (!genPoll) genPoll = setInterval(pollJobs, 2000);
+  } else if (genPoll) {
+    clearInterval(genPoll);
+    genPoll = null;
   }
 }
 
-async function checkGenService() {
+// Live banner: green = pipeline service reachable (can generate),
+// red = down, with the exact command to start it. Also gates the
+// Generate button so a queue of doomed jobs can't be created.
+async function checkGenService(manual) {
   const el = document.getElementById('gen-service');
+  const btn = document.getElementById('gen-recheck');
+  if (manual) btn.disabled = true;
   try {
     const r = await fetch('/api/generate/service');
     const s = await r.json();
+    genSvcOk = !!s.ok;
+    const comps = s.status && s.status.components;
+    const compHtml = comps ? '<span class="gen-comps">' + Object.entries(comps).map(
+      ([name, c]) => `<span class="gen-comp ${c.available ? 'yes' : 'no'}" title="${(c.reason || '').replace(/"/g, '&quot;')}">${c.available ? '&#10003;' : '&#10007;'} ${name}</span>`
+    ).join('') + '</span>' : '';
     if (s.ok) {
       el.className = 'gen-service ok';
-      el.innerHTML = '&#10003; pipeline service ready at ' + s.url +
-        (s.status && s.status.components ? ' &middot; components: ' + JSON.stringify(s.status.components) : '');
+      document.getElementById('gen-service-text').innerHTML = `pipeline service ready &middot; ${s.url}`;
     } else {
       el.className = 'gen-service bad';
-      el.innerHTML = '&#9888; pipeline service unreachable at ' + s.url + ' — ' + (s.detail || '');
+      document.getElementById('gen-service-text').innerHTML =
+        `pipeline service OFFLINE &middot; ${s.url} — ` +
+        `<code>cd plf-pipeline && python3 -m pipeline.server</code>`;
     }
+    document.getElementById('gen-service-comps').innerHTML = compHtml;
   } catch (e) {
+    genSvcOk = false;
     el.className = 'gen-service bad';
-    el.textContent = 'pipeline service unreachable: ' + e;
+    document.getElementById('gen-service-text').textContent = 'pipeline service unreachable: ' + e;
+    document.getElementById('gen-service-comps').innerHTML = '';
   }
+  const start = document.getElementById('gen-start');
+  start.disabled = !genSvcOk;
+  start.title = genSvcOk ? '' : 'Pipeline service offline — start it (see above), then Re-check';
+  if (manual) btn.disabled = false;
+  return genSvcOk;
 }
 
 async function genGo(path) {
@@ -1118,6 +1160,11 @@ function genLoadCtx(file) {
 async function genStart() {
   const files = [...genSel];
   if (!files.length) { alert('Select at least one video first.'); return; }
+  const svc = await checkGenService();
+  if (!svc) {
+    alert('Pipeline service is offline — start it (see banner), then Re-check.');
+    return;
+  }
   const btn = document.getElementById('gen-start');
   btn.disabled = true;
   try {
@@ -1133,24 +1180,51 @@ async function genStart() {
   } catch (e) {
     alert('Queue failed: ' + e);
   } finally {
-    btn.disabled = false;
+    btn.disabled = genSvcOk === false;
   }
+}
+
+async function jobAction(id, action) {
+  try {
+    const r = await fetch(`/api/generate/jobs/${id}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    if (!r.ok) {
+      const e = await r.json();
+      alert(e.detail || r.status);
+    }
+  } catch (e) { alert(action + ' failed: ' + e); }
+  pollJobs();
 }
 
 async function pollJobs() {
   if (document.getElementById('generate-panel').style.display === 'none') return;
+
+  // keep the service banner fresh (every 3rd tick ≈ 6s) so "offline →
+  // start service → Re-check" recovers without leaving the tab
+  if (++genSvcTick % 3 === 0) checkGenService();
+
   let jobs = [];
   try {
     const r = await fetch('/api/generate/jobs');
     jobs = (await r.json()).jobs || [];
   } catch (e) { return; }
-  if (!jobs.length) return;
 
   const el = document.getElementById('gen-jobs');
+  if (!jobs.length) {
+    el.innerHTML = '<div style="color:#484f58">No jobs yet. Finished PLFs open in the Timeline automatically.</div>';
+    return;
+  }
+
   el.innerHTML = jobs.map(j => {
-    const chip = `<span class="state-chip state-${j.state}">${j.state}</span>`;
+    const stopping = j.state === 'running' && j.cancel;
+    const state = stopping ? 'stopping' : j.state;
+    const chip = `<span class="state-chip state-${state}">${state}</span>`;
     let extra = '';
     if (j.state === 'error') extra = `<span class="job-err">${(j.error || '').replace(/</g, '&lt;')}</span>`;
+    else if (stopping) extra = '<span style="color:#d29922">discarding result when the current video finishes&#8230;</span>';
     else if (j.state === 'done') {
       if (!genOpened.has(j.id)) {
         genOpened.add(j.id);
@@ -1159,15 +1233,30 @@ async function pollJobs() {
       } else {
         extra = `<span style="color:#3fb950">&#10003; ${(j.out || '').split('/').pop()}</span>`;
       }
+    } else if (j.state === 'cancelled') {
+      extra = '<span style="color:#8b949e">stopped</span>';
     }
-    return `<div class="job">${chip}<span>${j.name}</span>${extra}</div>`;
+
+    let acts = '';
+    if (j.state === 'queued') {
+      acts += `<button onclick="jobAction(${j.id},'stop')">&#9209; Stop</button>`;
+      acts += `<button class="danger" onclick="jobAction(${j.id},'remove')">&#10005;</button>`;
+    } else if (j.state === 'running' && !stopping) {
+      acts += `<button onclick="jobAction(${j.id},'stop')">&#9209; Stop</button>`;
+    } else if (j.state === 'error' || j.state === 'cancelled') {
+      acts += `<button onclick="jobAction(${j.id},'retry')">&#8635; Retry</button>`;
+      acts += `<button class="danger" onclick="jobAction(${j.id},'remove')">&#10005;</button>`;
+    } else if (j.state === 'done') {
+      acts += `<button class="danger" onclick="jobAction(${j.id},'remove')">&#10005;</button>`;
+    }
+    return `<div class="job">${chip}<span>${j.name}</span>${extra}` +
+           `<span class="job-actions">${acts}</span></div>`;
   }).join('');
 
-  if (jobs.some(j => j.state === 'queued' || j.state === 'running')) {
-    if (!genPoll) genPoll = setInterval(pollJobs, 2000);
-  } else if (genPoll) {
-    clearInterval(genPoll);
-    genPoll = null;
+  // keep polling while the panel is open (the interval is only cleared
+  // when switching back to the Timeline)
+  if (genPoll === null && document.getElementById('generate-panel').style.display !== 'none') {
+    genPoll = setInterval(pollJobs, 2000);
   }
 }
 

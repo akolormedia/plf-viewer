@@ -322,27 +322,35 @@ def _call_pipeline(video_path: str, context: dict) -> str:
 
 
 def _worker():
-    import queue
-
     while True:
         job = _queue.get()
-        with _jobs_lock:
-            job["state"] = "running"
-            job["started"] = time.time()
         try:
-            text = _call_pipeline(job["video"], job["context"])
-            out = str(Path(job["video"]).with_suffix(".raw.plf"))
-            Path(out).write_text(text, encoding="utf-8")
-            _plf_out_allow.add(str(Path(out).resolve()))
+            if job.get("state") == "cancelled":
+                continue  # stopped/removed while still waiting in the queue
             with _jobs_lock:
-                job["state"] = "done"
-                job["out"] = out
-        except Exception as e:
-            with _jobs_lock:
-                job["state"] = "error"
-                job["error"] = str(e)
+                job["state"] = "running"
+                job["started"] = time.time()
+            try:
+                text = _call_pipeline(job["video"], job["context"])
+                out = str(Path(job["video"]).with_suffix(".raw.plf"))
+                with _jobs_lock:
+                    if job.get("cancel"):
+                        job["state"] = "cancelled"  # stop requested → discard
+                    else:
+                        Path(out).write_text(text, encoding="utf-8")
+                        _plf_out_allow.add(str(Path(out).resolve()))
+                        job["state"] = "done"
+                        job["out"] = out
+            except Exception as e:
+                with _jobs_lock:
+                    if job.get("cancel"):
+                        job["state"] = "cancelled"
+                    else:
+                        job["state"] = "error"
+                        job["error"] = str(e)
+            finally:
+                job["finished"] = time.time()
         finally:
-            job["finished"] = time.time()
             _queue.task_done()
 
 
@@ -392,10 +400,62 @@ def api_generate_jobs():
     with _jobs_lock:
         return {
             "jobs": [
-                {k: j[k] for k in ("id", "name", "video", "state", "out", "error", "started", "finished") if k in j}
+                {k: j[k] for k in ("id", "name", "video", "state", "out", "error",
+                                   "started", "finished", "cancel") if k in j}
                 for j in _jobs[-50:]
             ]
         }
+
+
+class JobActionRequest(BaseModel):
+    action: str  # "stop" | "retry" | "remove"
+
+
+@app.post("/api/generate/jobs/{job_id}/action")
+def api_generate_job_action(job_id: int, req: JobActionRequest):
+    """Job control: stop (cancel queued / discard running), retry, remove.
+
+    Stopping a *running* job can't interrupt the pipeline call itself
+    (Whisper is mid-video); the result is discarded when it returns.
+    """
+    _ensure_worker()
+    requeue = None
+    with _jobs_lock:
+        job = next((j for j in _jobs if j["id"] == job_id), None)
+        if job is None:
+            return JSONResponse(status_code=404, content={"detail": f"job {job_id} not found"})
+        state = job["state"]
+
+        if req.action == "stop":
+            if state == "queued":
+                job["state"] = "cancelled"  # worker skips it when dequeued
+            elif state == "running":
+                job["cancel"] = True         # result discarded on completion
+            else:
+                return JSONResponse(status_code=409,
+                                    content={"detail": f"job already {state}"})
+        elif req.action == "retry":
+            if state not in ("error", "cancelled"):
+                return JSONResponse(status_code=409,
+                                    content={"detail": f"cannot retry a {state} job"})
+            job["state"] = "queued"
+            job["error"] = None
+            job.pop("cancel", None)
+            job.pop("started", None)
+            job.pop("finished", None)
+            requeue = job
+        elif req.action == "remove":
+            if state == "running":
+                return JSONResponse(status_code=409,
+                                    content={"detail": "stop the job before removing it"})
+            if state == "queued":
+                job["state"] = "cancelled"  # stale queue entry gets skipped
+            _jobs.remove(job)
+        else:
+            return JSONResponse(status_code=400, content={"detail": f"unknown action: {req.action}"})
+    if requeue is not None:
+        _queue.put(requeue)
+    return {"ok": True}
 
 
 @app.get("/api/generate/file")

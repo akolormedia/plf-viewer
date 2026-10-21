@@ -27,7 +27,10 @@ Interactive web viewer and AI query interface for PLF (PromptLine Format) files.
 - **PLF Generator** — the **Generate** tab browses your disk server-side,
   queues one job per selected video (sequential worker, Whisper is CPU-bound),
   writes one `.raw.plf` next to each source and auto-opens the results in
-  the Timeline. Requires the pipeline service:
+  the Timeline. A live **service banner** shows whether the pipeline service
+  is up (with component chips + start command) and gates the Generate button;
+  jobs can be **stopped, retried and removed** from the Jobs list.
+  Requires the pipeline service:
   `cd plf-pipeline && python3 -m pipeline.server`
 - **Keyboard shortcuts** — `Ctrl+O` open, `Ctrl+F` search, `Space` play/pause,
   `Esc` deselect
